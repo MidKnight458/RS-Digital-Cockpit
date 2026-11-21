@@ -4,6 +4,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../digital_garage_payments/providers/payment_garage_providers.dart';
 import '../../sensors/biometric_immobilizer_service.dart';
 import '../../telemetry/providers/telemetry_providers.dart';
+import '../../telemetry/services/elm327_service.dart';
 import 'launcher_dock_widget.dart';
 
 /// Apartado **ECU**:
@@ -236,7 +237,9 @@ class DtcDiagnosticSheet extends ConsumerWidget {
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                if (adapterState.isConnecting)
+                                if (adapterState.isConnecting ||
+                                    adapterState.linkStatus ==
+                                        ObdLinkStatus.reconnecting)
                                   SizedBox(
                                     width: 16,
                                     height: 16,
@@ -245,7 +248,9 @@ class DtcDiagnosticSheet extends ConsumerWidget {
                                       color: primary,
                                     ),
                                   )
-                                else if (adapterState.isConnected && !isSimulator)
+                                else if (adapterState.linkStatus ==
+                                        ObdLinkStatus.connectedEcuReady &&
+                                    !isSimulator)
                                   Container(
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 8,
@@ -262,6 +267,47 @@ class DtcDiagnosticSheet extends ConsumerWidget {
                                         fontSize: 10.5,
                                         color:
                                             RenaultSportPalette.oemShiftGreen,
+                                      ),
+                                    ),
+                                  )
+                                else if (adapterState.linkStatus ==
+                                        ObdLinkStatus
+                                            .adapterConnectedEcuWaiting &&
+                                    !isSimulator)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: RenaultSportPalette.coldEngineAmber
+                                          .withValues(alpha: 0.16),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      'ESPERANDO ECU',
+                                      style: AppTheme.telemetryNumericStyle(
+                                        fontSize: 10,
+                                        color:
+                                            RenaultSportPalette.coldEngineAmber,
+                                      ),
+                                    ),
+                                  )
+                                else if (!isSimulator)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.withValues(alpha: 0.16),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      'OFF',
+                                      style: AppTheme.telemetryNumericStyle(
+                                        fontSize: 10,
+                                        color: Colors.grey,
                                       ),
                                     ),
                                   ),
@@ -303,6 +349,29 @@ class DtcDiagnosticSheet extends ConsumerWidget {
                             ),
                           ),
                         ),
+
+                        if (!isSimulator &&
+                            adapterState.selectedMacAddress != null &&
+                            !adapterState.isConnected) ...[
+                          const SizedBox(height: 10),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              onPressed: adapterState.isConnecting
+                                  ? null
+                                  : obdNotifier.reconnectNow,
+                              icon: const Icon(
+                                Icons.sync_rounded,
+                                size: 17,
+                              ),
+                              label: Text(
+                                adapterState.isConnecting
+                                    ? 'CONECTANDO...'
+                                    : 'RECONECTAR AHORA',
+                              ),
+                            ),
+                          ),
+                        ],
 
                         const Divider(height: 22),
 
@@ -710,6 +779,8 @@ class _BluetoothDevicesModalSheet extends ConsumerWidget {
                           final isSelected = device.macAddress ==
                                   adapterState.selectedMacAddress &&
                               !isSimulator;
+                          final isSelectedAndReady =
+                              isSelected && adapterState.isConnected;
                           return InkWell(
                             onTap: () {
                               Navigator.of(context).pop();
@@ -722,15 +793,18 @@ class _BluetoothDevicesModalSheet extends ConsumerWidget {
                             child: Container(
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: isSelected
+                                color: isSelectedAndReady
                                     ? RenaultSportPalette.oemShiftGreen
                                         .withValues(alpha: 0.14)
-                                    : Colors.black12,
+                                    : (isSelected
+                                        ? primary.withValues(alpha: 0.12)
+                                        : Colors.black12),
                                 borderRadius: BorderRadius.circular(12),
                                 border: Border.all(
-                                  color: isSelected
+                                  color: isSelectedAndReady
                                       ? RenaultSportPalette.oemShiftGreen
-                                      : (device.looksLikeObdAdapter
+                                      : (isSelected ||
+                                              device.looksLikeObdAdapter
                                           ? primary
                                           : Colors.white12),
                                   width: isSelected ? 1.8 : 1.0,
@@ -742,7 +816,7 @@ class _BluetoothDevicesModalSheet extends ConsumerWidget {
                                     device.looksLikeObdAdapter
                                         ? Icons.directions_car_filled_rounded
                                         : Icons.bluetooth_rounded,
-                                    color: isSelected
+                                    color: isSelectedAndReady
                                         ? RenaultSportPalette.oemShiftGreen
                                         : primary,
                                   ),

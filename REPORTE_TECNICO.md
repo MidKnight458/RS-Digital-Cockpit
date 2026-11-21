@@ -23,23 +23,24 @@ El **Renault Clio II Sport 172 Fase 2 (2004)** es un referente mecánico dentro 
 Diseñar, construir y validar **RS Digital Cockpit**, una plataforma móvil y *Car Launcher* para Android desarrollada en **Flutter 3 / Dart 3** con puente nativo en **Kotlin**, que integre telemetría OBD-II KWP2000 optimizada en tiempo real para la ECU **Siemens Sirius 34**, centro multimedia nativo, navegación GPS con cálculo de rutas y cronómetro de vueltas, sensores inerciales, seguridad biométrica y sincronización en **Firebase**, manteniendo un cumplimiento estricto de arquitectura reactiva pura en **Flutter Riverpod**.
 
 ### 1.3 Objetivos Específicos
-- **Optimizar la comunicación OBD-II sobre Línea K (10.4 kbps)** mediante inicialización determinista del adaptador ELM327, negociación escalonada de protocolo (`ATSP5` → `ATSP4` → `ATSP0`), modo de trama única (`010C1` + `ATST19` + `ATAT2`), lectura nativa por bloques (`1 ms`) y un multiplexor que asigna ~70–75% del bus a las RPM.
+- **Optimizar la comunicación OBD-II sobre Línea K (10.4 kbps)** mediante inicialización determinista con validación estricta de handshake AT (`ATZ`/`ATE0`), negociación escalonada de protocolo (`ATSP5` → `ATSP4` → `ATSP0`), modo de trama única (`010C1` + `ATST19` + `ATAT2`), lectura nativa por bloques (`1 ms`), aislamiento exclusivo de ancho de banda Bluetooth mediante perfiles adaptativos (`rpmOnly` 100% RPM frente a `engineParameters` 0% RPM en tarjeta deslizable) y detección real de pérdida de enlace (`ObdLinkStatus`) con reconexión automática progresiva.
 - **Incorporar un Simulador Físico Polimórfico (`ObdDataSource`)** fiel a las relaciones de caja **JC5-129** y a la curva térmica del **F4R 736**, permitiendo pruebas y demostraciones completas fuera del automóvil.
 - **Construir una interfaz automotriz a 120 FPS y 100% responsiva** inspirada en *"Renault Sport 2004 Phase 2 Reforged"*, con temas **Oscuro (*Night Stage*)**, **Claro (*Daylight Cup*)** y **Automático (Sistema Android)**, libre de desbordamientos (`RenderFlex overflowed`) tanto en Pixel Tablet (2560×1600) como en smartphones Android.
 - **Integrar los subsistemas nativos de Android** (`BluetoothSocket` RFCOMM SPP, `MediaSessionManager`, `NotificationListenerService`, `AudioManager` silencioso, `Geocoder`, `FLAG_KEEP_SCREEN_ON`, `sensors_plus`, `local_auth`, `geolocator` y `google_maps_flutter`).
 - **Consolidar el ecosistema Cloud y reglas de negocio** con Firebase Auth (Email con verificación obligatoria, Google Sign-In y GitHub OAuth), Firebase Storage, Firebase Realtime Database (**Blackbox Cloud**, **Track Laps** y órdenes de **Garage**), notificaciones del sistema Android (FCM + `flutter_local_notifications`), tres niveles de suscripción persistentes y pasarela validada con **Algoritmo de Luhn (ISO/IEC 7812)**.
 
-### 1.4 Alcance Funcional (6 Módulos Principales)
+### 1.4 Alcance Funcional (7 Módulos Principales)
 
 | Módulo | Pantalla / Controlador Principal | Responsabilidad Funcional |
 | :--- | :--- | :--- |
 | **Splash & Onboarding** | `RsSplashScreen`, `OnboardingScreen` | Secuencia de arranque con rombo vectorial Renault Sport e inducción guiada de 4 pasos persistida localmente. |
-| **1. `COCKPIT`** | `CockpitDashboardScreen`, `RenaultSportTachometerWidget`, `GForceBallWidget` | Tacómetro radial Sagem 120 FPS con Shift-Light frío/caliente, parámetros F4R (básicos + extendidos Plan 2+), **Blackbox Cloud** con visor e historial sincronizado, monitor de Fuerzas G calibrable (Plan 3) y **minimapa en vivo tipo videojuego** con espejo de ruta activa. |
+| **1. `COCKPIT`** | `CockpitDashboardScreen`, `RenaultSportTachometerWidget`, `EngineMiniGaugesWidget`, `GForceBallWidget` | Clúster principal deslizable (`_SwipeableTelemetryClusterCard`) que separa al 100% la vista **Tacómetro RPM** (solo `010C1`) de **Parámetros F4R** (6 mini-gauges radiales sin carga de RPM) para liberar ancho de banda Línea K, junto a Fuerzas G calibrables (Plan 3) y **minimapa tipo videojuego** con ruta OSRM. |
 | **2. `MULTIMEDIA`** | `MultimediaHubScreen`, `RsMediaNotificationListenerService` | Reproductor conectado al sistema Android (`MediaSessionManager`), carátula a fondo completo con filtro translúcido adaptable al tema activo, controles ampliados (`Random`, `Anterior`, `Play/Pausa`, `Siguiente`, `Repeat`), barra `seekTo`, volumen silencioso y atenuación rápida **`ATT`**. |
-| **3. `TRACK`** | `TrackMapScreen`, `TrackMapTelemetryNotifier` | Mapa nativo (2/3) con filtros cercanos reales (**Talleres**, **Gasolineras**, **Estacionamientos**) vía Nominatim + Photon, trazado de ruta vehicular azul vía **OSRM**, y cronómetro automático de **Laps GPS** (1/3, Plan 3) con geofencing y carga a Firebase por nombre de calle. |
-| **4. `GARAGE`** | `DigitalGarageScreen`, `DigitalGaragePaymentNotifier` | 3 planes funcionales persistentes (`RS Clubman` Gratis, `RS Cup Telemetry` \$99 MXN/mes, `RS Trophy Pro` \$899 MXN/año), desbloqueo de skins (`Sagem OEM`, `Jean Ragnotti`, `Clio V6`), catálogo de refacciones OEM F4R y checkout con **Luhn + biometría**. |
-| **5. `ACCOUNT`** | `PilotProfileScreen`, `PilotAuthNotifier`, `FcmTopicsNotifier` | Perfil multi-proveedor (foto editable exclusivamente en cuentas `password`), **odómetro automático (GPS + OBD-II `010D`)**, ajuste manual y alertas nativas Android por kilometraje de servicio (Plan 2+). |
-| **6. `ECU`** | `DtcDiagnosticSheet`, `ObdConnectionModeNotifier`, `RealElm327BluetoothDataSource` | Switch maestro **`ECU ON / OFF`** persistido, selector modal desplegable de dispositivos Bluetooth vinculados, switch de simulador F4R, lectura real Modo `03` y borrado biométrico Modo `04` de DTCs (Plan 3), más monitor serial KWP2000 en vivo. |
+| **3. `BLACKBOX`** | `BlackboxHubScreen`, `BlackboxRealtimeNotifier`, `blackboxSyncMetaProvider` | Sección dedicada a la derecha de Multimedia para gestión de **Blackbox Cloud**: estado de sincronización Firebase RTDB, tarjetas de picos máximos de sesión en vivo (`GUARDAR SESIÓN` / `REINICIAR PICOS`), resumen de GPS Laps activos e historial responsivo con eliminación de sesiones. |
+| **4. `TRACK`** | `TrackMapScreen`, `TrackMapTelemetryNotifier` | Mapa nativo (2/3) con filtros cercanos reales (**Talleres**, **Gasolineras**, **Estacionamientos**) vía Nominatim + Photon, trazado de ruta vehicular azul vía **OSRM**, y cronómetro automático de **Laps GPS** (1/3, Plan 3) con geofencing y carga a Firebase por nombre de calle. |
+| **5. `GARAGE`** | `DigitalGarageScreen`, `DigitalGaragePaymentNotifier` | 3 planes funcionales persistentes (`RS Clubman` Gratis, `RS Cup Telemetry` \$99 MXN/mes, `RS Trophy Pro` \$899 MXN/año), desbloqueo de skins (`Sagem OEM`, `Jean Ragnotti`, `Clio V6`), catálogo de refacciones OEM F4R y checkout con **Luhn + biometría**. |
+| **6. `ACCOUNT`** | `PilotProfileScreen`, `PilotAuthNotifier`, `FcmTopicsNotifier` | Perfil multi-proveedor (foto editable exclusivamente en cuentas `password`), **odómetro automático (GPS + OBD-II `010D`)**, ajuste manual y alertas nativas Android por kilometraje de servicio (Plan 2+). |
+| **7. `ECU`** | `DtcDiagnosticSheet`, `ObdConnectionModeNotifier`, `RealElm327BluetoothDataSource` | Switch maestro **`ECU ON / OFF`** persistido, máquina de estados `ObdLinkStatus` (`OK` solo con ECU lista, `ESPERANDO ECU`, reconexión automática progresiva `4s–10s` y botón manual `RECONECTAR AHORA`), selector modal Bluetooth, lectura real Modo `03`, borrado biométrico Modo `04` (Plan 3) y monitor serial KWP2000. |
 
 ---
 
@@ -61,18 +62,19 @@ flowchart TD
         BOOT["RsSplashScreen y OnboardingScreen"]
         AUTHUI["AuthScreen y EmailVerificationScreen"]
         SHELL["CockpitDashboardScreen y LauncherDockWidget"]
-        TACHO["RenaultSportTachometerWidget y GForceBallWidget"]
+        TACHO["RenaultSportTachometerWidget, EngineMiniGaugesWidget y GForceBallWidget"]
         MEDIA["MultimediaHubScreen (Filtro Adaptable + ATT)"]
+        BLACKBOX["BlackboxHubScreen (Sesiones + Picos + Laps)"]
         TRACK["TrackMapScreen (Minimapa Videojuego + Track 2/3 y Laps 1/3)"]
         GARAGE["DigitalGarageScreen (3 Planes + Tienda OEM Luhn)"]
         ACCOUNT["PilotProfileScreen (Odometro y Alertas)"]
-        ECU["DtcDiagnosticSheet (ECU ON/OFF + Modal Bluetooth + DTC)"]
+        ECU["DtcDiagnosticSheet (ECU ON/OFF, ObdLinkStatus + DTC)"]
     end
 
     subgraph STATE["Capa de Estado Reactivo (Flutter Riverpod)"]
         THEME_P["themeModeProvider y clusterSkinProvider"]
-        WAKE_P["screenWakeLockProvider y cockpitTabProvider"]
-        OBD_P["obdConnectionModeProvider, obdTelemetryStreamProvider y sirius34DtcProvider"]
+        WAKE_P["screenWakeLockProvider, cockpitTabProvider y cockpitClusterPageProvider"]
+        OBD_P["obdConnectionModeProvider, obdPollingProfileSyncProvider, obdTelemetryStreamProvider y sirius34DtcProvider"]
         IMU_P["gForceSensorProvider y biometricImmobilizerProvider"]
         MAP_P["trackMapTelemetryProvider"]
         MEDIA_P["multimediaHubProvider"]
@@ -82,9 +84,9 @@ flowchart TD
     end
 
     subgraph DATA["Capa de Datos, Puente Nativo Kotlin y Servicios Externos"]
-        ELM_REAL["RealElm327BluetoothDataSource (KWP2000 Turbo 10.4 kbps)"]
+        ELM_REAL["RealElm327BluetoothDataSource (KWP2000 + ObdPollingProfile + ObdLinkStatus)"]
         ELM_SIM["Clio172TrackSimulatorDataSource (Fisica F4R 736 / JC5-129)"]
-        NATIVE["MainActivity.kt (RFCOMM SPP, MediaSession, AudioManager, Geocoder, FLAG_KEEP_SCREEN_ON)"]
+        NATIVE["MainActivity.kt (RFCOMM SPP + EOF/TIMEOUT, MediaSession, AudioManager, Geocoder, FLAG_KEEP_SCREEN_ON)"]
         SENSORS["sensors_plus, geolocator, local_auth, google_maps_flutter"]
         GEO_API["Nominatim OSM, Photon Komoot y OSRM Routing"]
         FIREBASE["Firebase (Auth, Realtime Database REST+SDK, Storage, FCM)"]
@@ -127,19 +129,19 @@ lib/
     ├── onboarding/                             # Onboarding interactivo de 4 pasos (onboarding_provider/screen)
     ├── auth_profile/                           # PilotProfile, PilotAuthNotifier, Auth/Verify/Recovery/Account
     ├── cockpit_dashboard/
-    │   ├── cockpit_dashboard_screen.dart       # Cabecera, selector de tema, vistas Tablet/Teléfono e Historial Blackbox
+    │   ├── cockpit_dashboard_screen.dart       # Cabecera, enlace OBD2, clúster deslizable Tablet/Teléfono y tab Blackbox
     │   └── widgets/
-    │       ├── launcher_dock_widget.dart       # Dock inferior auto-adaptable (texto+icono / solo-iconos) + ScreenWakeLockNotifier
-    │       └── dtc_diagnostic_sheet.dart       # ECU ON/OFF, selector modal Bluetooth, DTC Sirius 34 y monitor serial
+    │       ├── launcher_dock_widget.dart       # Dock 7 pestañas auto-adaptable (BLACKBOX a la derecha de MULTIMEDIA) + WakeLock
+    │       └── dtc_diagnostic_sheet.dart       # ECU ON/OFF, ObdLinkStatus, RECONECTAR AHORA, modal Bluetooth y DTC
     ├── telemetry/
     │   ├── models/obd_telemetry_frame.dart     # ObdTelemetryFrame, ShiftLightStage y Sirius34DtcFault
-    │   ├── providers/telemetry_providers.dart  # Estado OBD2, stream telemetría, estadísticas 0-100 y DTC AsyncNotifier
-    │   ├── services/elm327_service.dart        # Contrato ObdDataSource, Sirius34KwpParser, ELM327 real y Simulador F4R
-    │   └── widgets/                            # RenaultSportTachometerWidget y GForceBallWidget (CustomPainter)
+    │   ├── providers/telemetry_providers.dart  # ObdAdapterState (reconexion auto), ObdPollingProfile, stream y DTC AsyncNotifier
+    │   ├── services/elm327_service.dart        # ObdDataSource, ObdPollingProfile, ObdLinkStatus, Sirius34KwpParser y ELM327 real
+    │   └── widgets/                            # RenaultSportTachometerWidget, EngineMiniGaugesWidget y GForceBallWidget
     ├── multimedia/multimedia_hub_screen.dart   # MediaSession, filtro de carátula por tema, volumen silencioso y ATT
     ├── map_track/                              # TrackMapTelemetryNotifier (GPS/OSRM/Laps) y TrackMapScreen
     ├── digital_garage_payments/                # Modelos de planes/Luhn, DigitalGaragePaymentNotifier y UI Garage
-    ├── cloud_sync_fcm/                         # BlackboxRealtimeNotifier (REST+SDK), FcmTopicsNotifier y HudNotificationWrapper
+    ├── cloud_sync_fcm/                         # BlackboxHubScreen, BlackboxRealtimeNotifier (REST+SDK), FcmTopics y HudWrapper
     └── sensors/                                # GForceSensorNotifier (IMU + calibración) y BiometricImmobilizerNotifier
 android/app/src/main/kotlin/com/rs/digital/cockpit/
 └── MainActivity.kt                             # RsMediaNotificationListenerService, RFCOMM, AudioManager, Geocoder y WakeLock
@@ -151,8 +153,9 @@ android/app/src/main/kotlin/com/rs/digital/cockpit/
 - **Tres modos de tema persistidos (`ThemeModeNotifier`):** `ThemeMode.system` (sigue automáticamente el tema claro/oscuro de Android), `ThemeMode.dark` (*Night Stage*: fondo carbón `#0F1115`, antracita `#1C2026`, ámbar Sagem `#FF6B00`, amarillo Sirius `#FFD100`) y `ThemeMode.light` (*Daylight Cup*: plata Iceberg `#E8ECEF`, blanco puro `#FFFFFF`, azul Mondial `#0038A8`, rojo aguja `#E11D48`).
 - **Estabilidad tipográfica a 120 FPS:** Todas las lecturas dinámicas emplean `FontFeature.tabularFigures()` con `Chakra Petch` y `Orbitron`, evitando desplazamientos horizontales de dígitos durante cambios rápidos de RPM o cronometraje.
 - **Adaptación responsiva multi-dispositivo:**
-  - En tablet apaisada (`>= 840 × 480`), Cockpit utiliza un tablero de 3 columnas (`Parámetros + Blackbox` | `Tacómetro 120 FPS` | `G-Force + Minimapa`).
-  - En smartphones, Cockpit pasa a columna desplazable con tacómetro de altura proporcional y compartimentos acotados que impiden solapamientos, `LauncherDockWidget` mide con `TextPainter` el ancho requerido y conmuta automáticamente a **solo iconos** cuando las 6 etiquetas exceden la pantalla, Multimedia compacta su barra ocultando el porcentaje en vertical, y Track/Account adaptan sus contenedores eliminando todo desbordamiento.
+  - En tablet apaisada (`>= 840 × 480`), Cockpit utiliza un tablero de **2 columnas optimizado** (`_TabletTwoColumnCockpitView`: `flex: 8` para la tarjeta principal deslizable `_SwipeableTelemetryClusterCard` y `flex: 3` para el panel lateral `G-Force` + `Minimapa`).
+  - La tarjeta `_SwipeableTelemetryClusterCard` (gestionada por `cockpitClusterPageProvider` y `cockpitPageControllerProvider`) permite deslizar entre **`TACÓMETRO RPM`** (`rpmOnlyMode = true`, centrado digital en RPM sin velocidad ni marcha) y **`PARÁMETROS F4R`** (`EngineMiniGaugesWidget` con 6 mini-gauges radiales en rejilla `3×2` para ancho `>= 520 px` o `2×3` para `< 520 px`), sincronizando a través de `obdPollingProfileSyncProvider` el perfil exclusivo del bus Línea K.
+  - En smartphones, `_CompactScrollableCockpitView` organiza los compartimentos verticalmente sin solapamientos; `LauncherDockWidget` calcula el ancho necesario para sus **7 pestañas** (incorporando **`BLACKBOX`** inmediatamente a la derecha de `MULTIMEDIA`) y conmuta automáticamente a **solo iconos** cuando las etiquetas exceden la pantalla; `MultimediaHubScreen` compacta su barra en vertical y `BlackboxHubScreen` adapta su historial entre 1 y 2 columnas.
 
 #### Seguridad en Autenticación y Control de Acceso por Suscripción
 
@@ -199,27 +202,30 @@ sequenceDiagram
 
 | Subsistema / Sensor | Paquete / API Nativa Android | Frecuencia / Canal | Procesamiento y Función en la App |
 | :--- | :--- | :--- | :--- |
-| **Bus OBD-II ELM327 (Línea K)** | `BluetoothSocket` RFCOMM SPP (`00001101-0000-1000-8000-00805F9B34FB`) | Canal `com.renaultsport.clio172/rfcomm`, lectura en bloques cada `1 ms` | Handshake KWP2000, multiplexor RPM (~70–75% ancho de banda), decodificación Modo `01`/`03`, borrado Modo `04` y switch `ECU ON/OFF`. |
+| **Bus OBD-II ELM327 (Línea K)** | `BluetoothSocket` RFCOMM SPP (`00001101-0000-1000-8000-00805F9B34FB`) | Canal `com.renaultsport.clio172/rfcomm`, lectura en bloques cada `1 ms` | Handshake KWP2000 con validación estricta AT, detección nativa de `isConnected`/EOF/`"TIMEOUT"`, perfiles adaptativos (`rpmOnly` 100% RPM / `engineParameters`), reconexión automática, Modo `01`/`03`/`04` y `ECU ON/OFF`. |
 | **Acelerómetro y Giroscopio (IMU)** | `sensors_plus` (`accelerometerEventStream`, `gyroscopeEventStream`) | `SensorInterval.gameInterval` (~50 Hz) | Conversión a G ($g_0 = 9.80665\,\text{m/s}^2$), calibración persistente de punto cero (`CALIBRAR`), filtro paso bajo EMA ($\alpha = 0.20$), zona muerta (`0.02 G`), estela de 18 puntos y velocidad angular yaw (°/s). |
 | **Receptor GPS de Alta Precisión** | `geolocator` (`AndroidSettings`) | `intervalDuration: 400 ms`, `distanceFilter: 0` | Seguimiento estilo videojuego en minimapa (posición, rumbo `bearing`, velocidad), odómetro automático Haversine y geofencing de vueltas (`> 35 m` / `< 25 m`). |
 | **Mapas Nativos, Geocodificación y Ruteo** | `google_maps_flutter`, Android `Geocoder`, Nominatim OSM, Photon Komoot, OSRM | Bajo demanda + refresco de calle cada `15 s` | Mapa oscuro/claro según tema, búsqueda de Talleres/Gasolineras/Estacionamientos reales, cálculo de ruta vehicular azul (`Polyline`) reflejada en Track y Cockpit, y nombrado de sesiones de laps por calle real. |
 | **Sesión Multimedia y Volumen del Sistema** | `MediaSessionManager`, `RsMediaNotificationListenerService`, `AudioManager` | Sondeo `700 ms` + BroadcastReceiver Spotify/Music | Extracción y compresión JPEG (máx. 600 px) de carátulas (`Bitmap`, `content://`, `https://`), transporte multimedia (`play_pause`, `next`, `previous`, `seekTo`, `shuffle`, `repeat`), slider silencioso (`flags = 0`) y atenuación `ATT`. |
 | **Sensor Biométrico y Háptica** | `local_auth`, `HapticFeedback` | Bajo demanda en acciones críticas | Compuerta biométrica nativa para activar planes de pago, confirmar compras OEM y ejecutar borrado de códigos DTC Modo `04`. |
-| **Gestión de Pantalla (Wake Lock)** | `WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON` | Canal `com.renaultsport.clio172/launcher` (`setKeepScreenOn`) | Mantiene la pantalla permanentemente encendida en `COCKPIT`, `MULTIMEDIA` y `ECU`; permite el reposo automático en `TRACK`, `GARAGE`, `ACCOUNT` y pantallas de acceso. |
+| **Gestión de Pantalla (Wake Lock)** | `WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON` | Canal `com.renaultsport.clio172/launcher` (`setKeepScreenOn`) | Mantiene la pantalla permanentemente encendida en `COCKPIT`, `MULTIMEDIA` y `ECU`; permite el reposo automático en `BLACKBOX`, `TRACK`, `GARAGE`, `ACCOUNT` y pantallas de acceso. |
 | **Notificaciones Nativas y Nube** | `flutter_local_notifications`, `firebase_messaging`, `firebase_auth`, `firebase_database`, `firebase_storage` | Eventos en vivo + caché `SharedPreferences` / `Hive` | Alertas del sistema Android por intervalos de mantenimiento F4R, sincronización automática de Blackbox Cloud (REST con auto-detección regional + `onValue` en vivo) y subida de Track Laps. |
 
 ### 3.2 Ingeniería del Protocolo OBD-II KWP2000 (ECU Siemens Sirius 34)
 
-#### Secuencia de Inicialización y Modo Turbo K-Line
+#### Secuencia de Inicialización, Validación de Enlace y Reconexión Automática
 En `RealElm327BluetoothDataSource` (`lib/features/telemetry/services/elm327_service.dart`), la conexión RFCOMM se gestiona en un hilo dedicado (`ioExecutor` con `ioLock` en `MainActivity.kt`) y los comandos desde Dart pasan por una cola serializada (`_serialLock`) que evita colisiones entre el bucle de telemetría y diagnósticos Modo `03`/`04`:
 
-1. **Inicialización segura ELM327:** `ATZ` (reset, espera `2500 ms` + `350 ms`) → `ATE0` (sin eco) → `ATL0` (sin saltos de línea) → `ATS0` (sin espacios entre bytes hex) → `ATH0` (sin cabeceras) → `ATAT1` (*Adaptive Timing* estándar).
-2. **Lectura inmediata de voltaje (`ATRV`):** Obtiene la tensión de batería del Pin 16 OBD-II incluso antes de iniciar el bus K-Line.
-3. **Negociación escalonada de protocolo:** Intenta `ATSP5` (**ISO 14230-4 KWP2000 Fast Init**, `4500 ms`) → fallback `ATSP4` (**5-Baud Slow Init**, `5500 ms`) → fallback `ATSP0` (detección automática multi-protocolo, `6500 ms`) validando respuesta real a `010C`.
-4. **Optimización post-init (Modo Turbo K-Line):** Una vez activa la ECU, reduce el tiempo de espera post-trama a `100 ms` (`ATST19`), activa *Adaptive Timing* agresivo (`ATAT2`) y verifica el soporte del sufijo de respuesta única **`010C1`**, evitando que el ELM327 espere `200 ms` adicionales por una segunda ECU inexistente y duplicando la tasa de refresco real de RPM.
+1. **Apertura segura y detección nativa real de caídas (`MainActivity.kt`):** `connectRfcommSocket` cierra limpiamente el socket si fallan tanto el intento seguro como el inseguro. Durante cada comando, `sendRawElmCommand` verifica `sock.isConnected`, detecta fin de flujo EOF (`bytesRead < 0`), cierra el socket mediante `closeRfcommSocket()` dentro de bloques `try/catch` ante fallos de E/S y devuelve explícitamente la marca `"TIMEOUT"` si `!promptReceived && cleaned.isEmpty()`.
+2. **Inicialización ELM327 con validación estricta AT:** Ejecuta `ATZ` → `ATE0` → `ATL0` → `ATS0` → `ATH0` → `ATAT1` contabilizando respuestas AT válidas (`validAtReplies`). Si `validAtReplies == 0` (por ejemplo, adaptador desconectado o falso puerto abierto sin respuesta), cierra el socket y lanza excepción inmediata en lugar de asumir un estado `OK`.
+3. **Máquina de estados `ObdLinkStatus` y reconexión progresiva:** Sustituye los falsos positivos por estados reales emitidos mediante `linkStatusStream` (`disconnected`, `connecting`, `adapterConnectedEcuWaiting` cuando el adaptador responde pero la ECU espera, `connectedEcuReady` único estado válido para mostrar `OK`, y `reconnecting`). Si se detecta desconexión o timeout crítico (`_handleLinkLost`), `obdTelemetryStreamProvider` suspende las tramas congeladas y `ObdConnectionModeNotifier` programa `_scheduleAutoReconnect()` con retroceso progresivo de **`4 s` → `6 s` → `8 s` → `10 s`**, además de ofrecer reconexión manual instantánea (`reconnectNow()` vía botón **`RECONECTAR AHORA`** en `DtcDiagnosticSheet`).
+4. **Negociación escalonada de protocolo y Modo Turbo K-Line:** Intenta `ATSP5` (**ISO 14230-4 KWP2000 Fast Init**) → fallback `ATSP4` (**5-Baud Slow Init**) → fallback `ATSP0` (detección automática). Una vez enlazada la ECU, `_configureTurboKLineAndSeedCoolant()` aplica `ATST19` (`100 ms`), `ATAT2` (*Adaptive Timing* agresivo) y valida trama única **`010C1`**, obteniendo además una lectura inicial del refrigerante antes de iniciar el ciclo continuo.
 
-#### Multiplexor de Prioridad y Fórmulas de Decodificación (`Sirius34KwpParser`)
-Para impedir que la lectura de sensores lentos congele la aguja del tacómetro, el bucle ejecuta ráfagas de **2 lecturas consecutivas de RPM (`010C1`) por cada 1 sensor secundario en rotación** (`0111`, `010D`, `0105`, `010B`, `0104`, `010E`, `010F`, `ATRV`), emitiendo cada muestra inmediatamente al stream:
+#### Perfiles Adaptativos Exclusivos (`ObdPollingProfile`) y Fórmulas (`Sirius34KwpParser`)
+Para eliminar por completo la saturación del bus de **10.4 kbps**, la UI separa las RPM de los parámetros secundarios mediante `ObdDataSource.setPollingProfile` (coordinado automáticamente por `obdPollingProfileSyncProvider` y `_startAdaptivePollingLoop`):
+- **`ObdPollingProfile.rpmOnly` (vista `TACÓMETRO RPM`):** Dedica **100% del ancho de banda a `010C1`**, sin solicitar PIDs secundarios ni carga extra de parámetros, maximizando la fluidez de la aguja digital y física.
+- **`ObdPollingProfile.engineParameters` (vista `PARÁMETROS F4R`):** Deslizar hacia los **6 mini-gauges radiales** (`EngineMiniGaugesWidget`) detiene al 100% las peticiones de RPM y rota exclusivamente los PIDs de motor (`0105`, `0111`, `ATRV`, `010F`, y en Plan 2+ `010B`, `010E`, `0104`).
+- **`ObdPollingProfile.backgroundMinimal`:** Reduce al mínimo el tráfico OBD-II cuando el piloto navega fuera de `COCKPIT`:
 
 | Comando / PID | Parámetro | Fórmula de Decodificación | Uso en RS Digital Cockpit |
 | :--- | :--- | :--- | :--- |
@@ -236,24 +242,38 @@ Para impedir que la lectura de sensores lentos congele la aguja del tacómetro, 
 
 ```mermaid
 stateDiagram-v2
-    [*] --> InitElm327: Socket RFCOMM SPP (1 ms block read)
-    InitElm327 --> NegotiateBus: ATZ -> ATE0 -> ATL0 -> ATS0 -> ATH0 -> ATAT1 -> ATRV
-    NegotiateBus --> TurboKLine: ATSP5 -> ATSP4 -> ATSP0 (BUS INIT OK)
-    TurboKLine --> RpmMultiplexLoop: ATST19 + ATAT2 + Prueba 010C1
+    [*] --> Connecting: Socket RFCOMM SPP (1 ms block read)
+    Connecting --> InitElm327: Socket abierto (isConnected == true)
+    Connecting --> LinkLost: Error apertura seguro/inseguro
 
-    state RpmMultiplexLoop {
-        [*] --> RpmBurst
-        RpmBurst: Rafaga Prioritaria (2x 010C1 -> ~70-75% del bus)
-        SecondarySlot: 1 Sensor Rotativo (0111, 010D, 0105, 010B, 0104, 010E, 010F, ATRV)
-        RpmBurst --> SecondarySlot: Emision inmediata al stream
-        SecondarySlot --> RpmBurst: Ciclo continuo
+    InitElm327 --> LinkLost: validAtReplies == 0 (cierra socket)
+    InitElm327 --> AdapterWaiting: ATZ..ATAT1 OK (ObdLinkStatus.adapterConnectedEcuWaiting)
+
+    AdapterWaiting --> TurboKLine: ATSP5 -> ATSP4 -> ATSP0 (BUS INIT OK)
+    AdapterWaiting --> LinkLost: EOF / TIMEOUT / Error E/S
+
+    TurboKLine --> AdaptivePolling: connectedEcuReady (ATST19 + ATAT2 + 010C1 + Seed Coolant)
+
+    state AdaptivePolling {
+        [*] --> RpmOnlyMode
+        RpmOnlyMode: ObdPollingProfile.rpmOnly (100% 010C1, vista TACOMETRO RPM)
+        EngineParamsMode: ObdPollingProfile.engineParameters (0% RPM; 0105, 0111, ATRV, 010F, 010B, 010E, 0104)
+        BackgroundMode: ObdPollingProfile.backgroundMinimal (fuera de COCKPIT)
+        RpmOnlyMode --> EngineParamsMode: Deslizar tarjeta a PARAMETROS F4R
+        EngineParamsMode --> RpmOnlyMode: Deslizar tarjeta a TACOMETRO RPM
+        RpmOnlyMode --> BackgroundMode: Cambiar pestana
+        BackgroundMode --> RpmOnlyMode: Volver a COCKPIT
     }
 
-    RpmMultiplexLoop --> ColdMap: PID 0105 menor a 75 C
-    RpmMultiplexLoop --> WarmMap: PID 0105 mayor o igual a 75 C
+    AdaptivePolling --> ColdMap: PID 0105 menor a 75 C
+    AdaptivePolling --> WarmMap: PID 0105 mayor o igual a 75 C
+    AdaptivePolling --> LinkLost: isConnected false / bytesRead < 0 / TIMEOUT
 
     ColdMap: Proteccion termica F4R (alerta 5,000 RPM)
     WarmMap: VVT activo (>5,150 RPM y Carga >=50%), Shift Verde OEM 6,750 RPM, Corte 7,250 RPM
+
+    LinkLost --> Reconnecting: disconnected -> _scheduleAutoReconnect (4s, 6s, 8s, 10s) o RECONECTAR AHORA
+    Reconnecting --> Connecting: Nuevo intento RFCOMM
 ```
 
 ### 3.3 Procesamiento Matemático de Sensores Inerciales (IMU), Audio y GPS
@@ -282,22 +302,25 @@ $$\text{targetStep} = \begin{cases} 0 & \text{si } s_{\text{actual}} \le 0 \\ \t
 ## 4. Proceso de Desarrollo
 
 ### 4.1 Metodología y Evolución Real del Proyecto
-El desarrollo se ejecutó de forma **iterativa e incremental** con validación continua en hardware real (Google Pixel Tablet con Android 17 / API 36, smartphone Android y vehículo Renault Clio RS 172 con adaptador ELM327) y trazabilidad completa en Git bajo especificación **Conventional Commits** (19 commits registrados en `main`):
+El desarrollo se ejecutó de forma **iterativa e incremental** con validación continua en hardware real (Google Pixel Tablet con Android 17 / API 36, smartphone Android y vehículo Renault Clio RS 172 con adaptador ELM327) y trazabilidad completa en Git bajo especificación **Conventional Commits** en `main`:
 
 1. **Fase 1 — Cimentación, Manifiesto Android 17 y Sistema de Diseño (`4f54b25` – `bc00e3e`):** Configuración del proyecto Flutter, manifiesto con categorías `HOME`/`DEFAULT`/`CAR_DOCK`/`CAR_MODE` y permisos Bluetooth/ubicación/biometría, implementación de la paleta *Renault Sport 2004 Phase 2 Reforged*, `ThemeModeNotifier` y Onboarding de 4 pasos.
 2. **Fase 2 — Núcleo OBD-II, Relojes 120 FPS y Entorno de Compilación (`91151ab` – `8179800`):** Creación del contrato polimórfico `ObdDataSource`, simulador físico F4R 736 / JC5-129, tacómetro `CustomPainter` + `ShaderMask`, medidor IMU de Fuerzas G, integración inicial de Firebase, mapas y pasarela Luhn; migración de Gradle a **AGP 9.1.0 / Kotlin 2.4.0** (`compilerOptions`) y unificación de marca a **RS Digital Cockpit** con Splash Screen vectorial.
 3. **Fase 3 — Validación en Vehículo Real y Optimización K-Line Turbo (`b832c16` – `00f8859`):** Pruebas en el Clio RS 172 real para corregir timeouts de `BUS INIT`, eliminar códigos DTC falsos sustituyéndolos por un parser real Modo `03`, e introducir el modo Turbo K-Line (`010C1`, `ATST19`, `ATAT2`, lectura en bloques de `1 ms` y multiplexor de RPM).
 4. **Fase 4 — Centro Multimedia Nativo y Telemetría Avanzada (`6e2cccc` – `54721f7`):** Integración con `MediaSessionManager` y `RsMediaNotificationListenerService` para carátulas/controles/progreso real, volumen silencioso sin popup, botón `ATT`, calibración de Fuerzas G, visor de historial Blackbox Cloud, minimapa en vivo, cronómetro GPS de vueltas hacia Firebase, odómetro automático con notificaciones Android y switch maestro `ECU ON/OFF`.
 5. **Fase 5 — Filtros Geoespaciales Abiertos, Planes Persistentes y Biometría (`fd8d716`):** Reemplazo de búsquedas por Nominatim + Photon Komoot, ampliación del panel de parámetros F4R, persistencia de los 3 niveles de suscripción y skins con compuerta biométrica (`local_auth`) y renovación de `README.md`.
-6. **Fase 6 — Pulido Multi-Dispositivo, Ruteo OSRM y Sincronización Cloud (`fc10926` – `7212ffe`):** Rediseño responsivo integral para smartphones (tacómetro con compartimentos acotados, dock inferior auto-adaptable a solo iconos, barra de volumen compacta en vertical, corrección de desbordamientos en Track y Account), minimapa centrado tipo videojuego con espejo de ruta azul OSRM, política `FLAG_KEEP_SCREEN_ON`, selector de tema **Auto / Oscuro / Claro**, filtro adaptable en Multimedia según el tema, modal desplegable de dispositivos Bluetooth en ECU, corrección matemática del botón `ATT` en volúmenes bajos y rediseño del cliente de **Blackbox Cloud** con detección regional rápida vía REST autenticado.
+6. **Fase 6 — Pulido Multi-Dispositivo, Ruteo OSRM y Sincronización Cloud (`fc10926` – `cf91e08`):** Rediseño responsivo integral para smartphones (tacómetro con compartimentos acotados, dock inferior auto-adaptable a solo iconos, barra de volumen compacta en vertical, corrección de desbordamientos en Track y Account), minimapa centrado tipo videojuego con espejo de ruta azul OSRM, política `FLAG_KEEP_SCREEN_ON`, selector de tema **Auto / Oscuro / Claro**, filtro adaptable en Multimedia según el tema, modal desplegable de dispositivos Bluetooth en ECU, corrección matemática del botón `ATT` en volúmenes bajos y rediseño del cliente de **Blackbox Cloud** con detección regional rápida vía REST autenticado.
+7. **Fase 7 — Aislamiento K-Line RPM/Mini-Gauges, Sección `BLACKBOX` Dedicada y Reconexión Real OBD-II:** Rediseño de Cockpit en 2 columnas (`_TabletTwoColumnCockpitView` `8:3`) con tarjeta principal deslizable (`_SwipeableTelemetryClusterCard`) que aísla la vista `TACÓMETRO RPM` (`ObdPollingProfile.rpmOnly`, 100% `010C1`) de los 6 mini-gauges radiales de `EngineMiniGaugesWidget` (`ObdPollingProfile.engineParameters`, 0% RPM), incorporación de la pestaña dedicada **`BLACKBOX`** (`BlackboxHubScreen`) a la derecha de `MULTIMEDIA`, detección nativa real de socket caído/EOF/`"TIMEOUT"` en `MainActivity.kt`, validación estricta AT en handshake y reconexión automática progresiva (`4 s`–`10 s`) mediante `ObdLinkStatus` y botón manual **`RECONECTAR AHORA`**.
 
 ### 4.2 Retos Técnicos Encontrados y Soluciones Aplicadas
 
 | Reto Técnico Detectado | Causa Raíz Identificada | Solución Implementada y Verificada |
 | :--- | :--- | :--- |
-| **Tacómetro lento (<2 Hz) sobre ELM327 real** | Petición secuencial de todos los PIDs y espera de 200 ms por una segunda ECU inexistente en Línea K. | Sufijo de trama única `010C1` + `ATST19` + `ATAT2` + lectura por bloques de `1 ms` en Kotlin + multiplexor `2×RPM / 1×Secundario`. |
-| **Interferencia Bluetooth entre OBD-II y música** | El socket RFCOMM mantenía tráfico continuo cuando el usuario solo deseaba reproducir audio. | Switch maestro persistido **`ECU ON / OFF`** que cierra completamente el socket RFCOMM y libera el ancho de banda Bluetooth. |
-| **Desbordamientos y solapamientos en smartphone** | Alturas fijas pensadas para tablet 2560×1600 (`RenderFlex overflowed` en Track/Account, textos encimados en tacómetro y dock horizontal con scroll). | Compartimentos proporcionales `FittedBox` en tacómetro, `TextPainter` en `LauncherDockWidget` para conmutar a solo iconos, `LayoutBuilder` en Track/Multimedia y `Flexible`/`Expanded` en Account. |
+| **Tacómetro lento (<2 Hz) sobre ELM327 real** | Petición secuencial de todos los PIDs y espera de 200 ms por una segunda ECU inexistente en Línea K. | Sufijo de trama única `010C1` + `ATST19` + `ATAT2` + lectura por bloques de `1 ms` en Kotlin + aislamiento exclusivo `rpmOnly` (`100% 010C1`). |
+| **Competencia de ancho de banda entre RPM y parámetros F4R** | Cargar simultáneamente RPM y sensores secundarios saturaba los 10.4 kbps de la Línea K / enlace Bluetooth. | Tarjeta deslizable (`_SwipeableTelemetryClusterCard`) entre `TACÓMETRO RPM` (`rpmOnlyMode`) y `PARÁMETROS F4R` (`EngineMiniGaugesWidget`), acoplada a perfiles exclusivos `ObdPollingProfile` en `Elm327Service`. |
+| **Interferencia Bluetooth entre OBD-II y música** | El socket RFCOMM mantenía tráfico continuo cuando el usuario solo deseaba reproducir audio. | Switch maestro persistido **`ECU ON / OFF`** que cierra completamente el socket RFCOMM y perfil `backgroundMinimal` fuera de Cockpit. |
+| **Falso estado `OK` desconectado y bloqueo tras `TIMEOUT` al abrir puerto** | La apertura de socket sin respuestas AT reales o un timeout inicial no invalidaba la sesión ni iniciaba recuperación automática. | Validación estricta `validAtReplies` en inicialización AT, verificación nativa de `sock.isConnected`, EOF (`bytesRead < 0`) y retorno `"TIMEOUT"` en `MainActivity.kt`, máquina `ObdLinkStatus` (`OK` solo con ECU lista), suspensión de tramas congeladas y reconexión automática progresiva (`4 s`–`10 s`) + botón **`RECONECTAR AHORA`**. |
+| **Desbordamientos y solapamientos en smartphone** | Alturas fijas pensadas para tablet 2560×1600 (`RenderFlex overflowed` en Track/Account, textos encimados en tacómetro y dock horizontal con scroll). | Compartimentos proporcionales `FittedBox` en tacómetro, `TextPainter` en `LauncherDockWidget` para conmutar a solo iconos con 7 pestañas, `LayoutBuilder` en Track/Multimedia/Blackbox y `Flexible`/`Expanded` en Account. |
 | **Bolita azul adelantándose al minimapa al conducir** | `Geolocator` sin `AndroidSettings` actualizaba cada ~5 s mientras `myLocationEnabled` nativo se movía cada 1 s. | `AndroidSettings(intervalDuration: 400 ms, distanceFilter: 0)` + cámara con `bearing` y `tilt: 35°` + marcador central fijo `_CenteredVehicleBeacon`. |
 | **Atenuación `ATT` subía el volumen en niveles bajos** | Un umbral defensivo (`volumePercent > 0.04 ? volume : 0.60`) sustituía volúmenes de 1 paso (`4%` en escalas de 25 pasos) por `60%` antes de dividir entre 4. | Lectura fresca `getVolumeState` y cálculo en pasos discretos `round(currentStep * 0.25).clamp(0, currentStep - 1)`, garantizando reducción estricta. |
 | **`TimeoutException` (10 s) en sincronización Blackbox Cloud** | `google-services.json` carecía de `firebase_url` y el proyecto `rs-digital-cockpit` devolvía HTTP `404` por no tener aún creada la instancia RTDB; el SDK WebSocket reintentaba hasta agotar el timeout. | Cliente híbrido en `BlackboxRealtimeNotifier`: sondeo REST autenticado con ID Token sobre las regiones estándar (respuesta en `< 1 s` con diagnóstico exacto si falta crear RTDB o ajustar Rules) + suscripción `onValue` solo cuando la base responde `200 OK`. |
@@ -313,16 +336,16 @@ Al cierre del desarrollo se ejecutaron las cuatro compuertas de calidad sobre la
    - Fidelidad mecánica del Shift-Light (motor frío `< 75 °C` → alerta 5,000 RPM vs motor caliente `>= 75 °C` → verde 6,750 RPM y corte 7,250 RPM).
    - Reglas de seguridad Firebase Auth (edición de avatar habilitada únicamente para `password` y bloqueada en `google.com` / `github.com`).
    - Validación matemática de tarjetas mediante **Algoritmo de Luhn**, expiración `MM/YY` y `CVV`.
-4. **Compilación Android (`flutter build apk --debug`):** Compilación Gradle exitosa y generación del artefacto final `build/app/outputs/flutter-apk/RS-Digital-Cockpit.apk`.
+4. **Compilación Android (`flutter build apk --debug`):** Compilación Gradle exitosa y generación del artefacto final `build/app/outputs/flutter-apk/RS-Digital-Cockpit.apk` (`213,744,290` bytes).
 
 ---
 
 ## 5. Conclusiones
 
-1. **Modernización viable de vehículos clásicos mediante ingeniería de protocolos:** El proyecto demuestra que es posible construir una experiencia de tablero digital y telemetría de alto rendimiento incluso sobre buses seriales legados de **10.4 kbps (KWP2000 / Siemens Sirius 34)**, siempre que se diseñe la comunicación con conocimiento del hardware real (trama única `010C1`, `ATST19`/`ATAT2`, lectura nativa en bloques y priorización de RPM) en lugar de depender de sondeos genéricos.
-2. **Solidez de la arquitectura 100% Riverpod:** Mantener todo el ciclo de vida de sensores, Bluetooth, audio, GPS, temas, wake lock y nube bajo `Notifier`, `AsyncNotifier` y `StreamProvider` sin una sola llamada a `setState` ni `StatefulWidget` resultó en un código altamente modular, predecible, fácil de depurar y libre de fugas de recursos (`ref.onDispose`).
-3. **Importancia de la integración nativa y las pruebas en hardware real:** La combinación de Flutter para una UI vectorial fluida a 120 FPS con un puente nativo compacto en Kotlin (`MainActivity.kt`) permitió resolver requisitos críticos de cabina —como la captura de carátulas del sistema, el volumen silencioso sin popups, la comunicación RFCOMM de baja latencia y el bloqueo de reposo de pantalla— que no son viables únicamente con paquetes multiplataforma genéricos. Asimismo, probar en tablet, teléfono y vehículo real reveló detalles determinantes (desbordamientos verticales, intervalos GPS de Android, redondeo de pasos de volumen y tiempos de inicialización K-Line) que elevaron notablemente la calidad final del producto.
-4. **Independencia y resiliencia ante servicios externos:** El uso de servicios abiertos (Nominatim, Photon Komoot y OSRM), caché offline por usuario, simulador físico polimórfico y detección rápida de estado de Firebase garantiza que la aplicación permanezca funcional, responsiva y segura dentro y fuera de cobertura de red.
+1. **Modernización viable de vehículos clásicos mediante ingeniería de protocolos:** El proyecto demuestra que es posible construir una experiencia de tablero digital y telemetría de alto rendimiento incluso sobre buses seriales legados de **10.4 kbps (KWP2000 / Siemens Sirius 34)**, siempre que se diseñe la comunicación con conocimiento del hardware real (trama única `010C1`, `ATST19`/`ATAT2`, lectura nativa en bloques, aislamiento exclusivo entre RPM y parámetros secundarios mediante `ObdPollingProfile`, detección real de EOF/`"TIMEOUT"` y reconexión progresiva) en lugar de depender de sondeos genéricos.
+2. **Solidez de la arquitectura 100% Riverpod:** Mantener los **7 módulos principales** (`COCKPIT`, `MULTIMEDIA`, `BLACKBOX`, `TRACK`, `GARAGE`, `ACCOUNT` y `ECU`) y todo el ciclo de vida de sensores, Bluetooth, audio, GPS, temas, wake lock y nube bajo `Notifier`, `AsyncNotifier` y `StreamProvider` sin una sola llamada a `setState` ni `StatefulWidget` resultó en un código altamente modular, predecible, fácil de depurar y libre de fugas de recursos (`ref.onDispose`).
+3. **Importancia de la integración nativa y las pruebas en hardware real:** La combinación de Flutter para una UI vectorial fluida a 120 FPS con un puente nativo compacto en Kotlin (`MainActivity.kt`) permitió resolver requisitos críticos de cabina —como la captura de carátulas del sistema, el volumen silencioso sin popups, la comunicación RFCOMM de baja latencia con detección real de desconexión y el bloqueo de reposo de pantalla— que no son viables únicamente con paquetes multiplataforma genéricos. Asimismo, probar en tablet, teléfono y vehículo real (incluido el adaptador OBD-II apagado o fuera de rango) reveló detalles determinantes que elevaron notablemente la calidad final del producto.
+4. **Independencia y resiliencia ante servicios externos:** El uso de servicios abiertos (Nominatim, Photon Komoot y OSRM), caché offline por usuario, simulador físico polimórfico, detección rápida de estado de Firebase y recuperación automática del enlace Bluetooth garantiza que la aplicación permanezca funcional, responsiva y segura dentro y fuera de cobertura de red.
 
 ### Líneas de Trabajo Futuro
 - **Activación productiva de Firebase Realtime Database y Storage** en consola con las reglas por `$uid` definidas para habilitar la sincronización instantánea entre múltiples dispositivos sin cambios en el APK.

@@ -9,10 +9,12 @@ import '../models/obd_telemetry_frame.dart';
 /// 100% responsivo (sin encimamientos ni desbordamientos en tablet ni teléfono).
 class RenaultSportTachometerWidget extends ConsumerWidget {
   final ObdTelemetryFrame frame;
+  final bool rpmOnlyMode;
 
   const RenaultSportTachometerWidget({
     super.key,
     required this.frame,
+    this.rpmOnlyMode = true,
   });
 
   @override
@@ -117,90 +119,135 @@ class RenaultSportTachometerWidget extends ConsumerWidget {
                             ),
                           ),
 
-                          // Zona inferior media (entre eje y la base, despejada de dígitos 0 y 8)
-                          Positioned(
-                            bottom: size * 0.17,
-                            width: size * 0.40,
-                            height: size * 0.17,
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.baseline,
-                                textBaseline: TextBaseline.alphabetic,
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 9,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: skin.primaryDialColor
-                                          .withValues(alpha: 0.18),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: skin.primaryDialColor,
-                                        width: 1.4,
-                                      ),
-                                    ),
-                                    child: Text(
-                                      gearText,
+                          if (rpmOnlyMode)
+                            // En modo solo-RPM: display digital amplio y limpio sin velocidad ni marcha
+                            Positioned(
+                              bottom: size * 0.11,
+                              width: size * 0.46,
+                              height: size * 0.25,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      '${smoothedFrame.rpm.round()}',
                                       style: AppTheme.digitalDisplayStyle(
-                                        fontSize: 26,
-                                        color: skin.primaryDialColor,
+                                        fontSize: 40,
+                                        color: smoothedFrame.shiftLightStage ==
+                                                ShiftLightStage
+                                                    .optimalGreenShift
+                                            ? RenaultSportPalette.oemShiftGreen
+                                            : smoothedFrame.shiftLightStage ==
+                                                        ShiftLightStage
+                                                            .fuelCutLimiterFlash &&
+                                                    flashPhase
+                                                ? RenaultSportPalette
+                                                    .revLimiterRed
+                                                : (isDark
+                                                    ? Colors.white
+                                                    : const Color(0xFF0F172A)),
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Text(
-                                    '${smoothedFrame.speedKmh}',
-                                    style: AppTheme.digitalDisplayStyle(
-                                      fontSize: 34,
-                                      color: isDark
-                                          ? Colors.white
-                                          : const Color(0xFF0F172A),
+                                    Text(
+                                      'RPM',
+                                      style: AppTheme.telemetryNumericStyle(
+                                        fontSize: 13,
+                                        color: skin.primaryDialColor,
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'KM/H',
-                                    style: AppTheme.telemetryNumericStyle(
-                                      fontSize: 11,
-                                      color: isDark
-                                          ? Colors.white54
-                                          : Colors.black54,
-                                    ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                          ),
-
-                          // Zona inferior abierta del dial: RPM digitales
-                          Positioned(
-                            bottom: size * 0.06,
-                            width: size * 0.50,
-                            height: size * 0.095,
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Text(
-                                '${smoothedFrame.rpm.round()} RPM',
-                                style: AppTheme.telemetryNumericStyle(
-                                  fontSize: 16,
-                                  color: smoothedFrame.shiftLightStage ==
-                                          ShiftLightStage.optimalGreenShift
-                                      ? RenaultSportPalette.oemShiftGreen
-                                      : smoothedFrame.shiftLightStage ==
-                                                  ShiftLightStage
-                                                      .fuelCutLimiterFlash &&
-                                              flashPhase
-                                          ? RenaultSportPalette.revLimiterRed
-                                          : skin.primaryDialColor,
-                                  fontWeight: FontWeight.w800,
+                            )
+                          else ...[
+                            // Zona inferior media (entre eje y la base, despejada de dígitos 0 y 8)
+                            Positioned(
+                              bottom: size * 0.17,
+                              width: size * 0.40,
+                              height: size * 0.17,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.baseline,
+                                  textBaseline: TextBaseline.alphabetic,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 9,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: skin.primaryDialColor
+                                            .withValues(alpha: 0.18),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: skin.primaryDialColor,
+                                          width: 1.4,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        gearText,
+                                        style: AppTheme.digitalDisplayStyle(
+                                          fontSize: 26,
+                                          color: skin.primaryDialColor,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      '${smoothedFrame.speedKmh}',
+                                      style: AppTheme.digitalDisplayStyle(
+                                        fontSize: 34,
+                                        color: isDark
+                                            ? Colors.white
+                                            : const Color(0xFF0F172A),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      'KM/H',
+                                      style: AppTheme.telemetryNumericStyle(
+                                        fontSize: 11,
+                                        color: isDark
+                                            ? Colors.white54
+                                            : Colors.black54,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
-                          ),
+
+                            // Zona inferior abierta del dial: RPM digitales
+                            Positioned(
+                              bottom: size * 0.06,
+                              width: size * 0.50,
+                              height: size * 0.095,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Text(
+                                  '${smoothedFrame.rpm.round()} RPM',
+                                  style: AppTheme.telemetryNumericStyle(
+                                    fontSize: 16,
+                                    color: smoothedFrame.shiftLightStage ==
+                                            ShiftLightStage.optimalGreenShift
+                                        ? RenaultSportPalette.oemShiftGreen
+                                        : smoothedFrame.shiftLightStage ==
+                                                    ShiftLightStage
+                                                        .fuelCutLimiterFlash &&
+                                                flashPhase
+                                            ? RenaultSportPalette.revLimiterRed
+                                            : skin.primaryDialColor,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),

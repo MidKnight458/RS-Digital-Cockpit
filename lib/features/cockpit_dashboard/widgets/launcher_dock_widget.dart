@@ -7,10 +7,11 @@ import '../../onboarding/onboarding_provider.dart';
 import '../../splash/rs_splash_screen.dart';
 
 /// Apartados principales centrados en la barra inferior:
-/// COCKPIT, MULTIMEDIA, TRACK, GARAGE, ACCOUNT, ECU
+/// COCKPIT, MULTIMEDIA, BLACKBOX, TRACK, GARAGE, ACCOUNT, ECU
 enum CockpitSectionTab {
   cockpitHud('COCKPIT', Icons.speed_rounded),
   multimediaHub('MULTIMEDIA', Icons.headphones_rounded),
+  blackboxCloud('BLACKBOX', Icons.cloud_done_rounded),
   trackMapGps('TRACK', Icons.map_rounded),
   digitalGarage('GARAGE', Icons.shopping_bag_rounded),
   pilotProfile('ACCOUNT', Icons.person_rounded),

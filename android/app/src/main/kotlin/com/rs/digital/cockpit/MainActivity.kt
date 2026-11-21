@@ -808,8 +808,16 @@ class MainActivity : FlutterFragmentActivity() {
                     socket?.close()
                 } catch (_: Exception) {
                 }
-                socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                socket.connect()
+                try {
+                    socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+                    socket.connect()
+                } catch (e: Exception) {
+                    try {
+                        socket?.close()
+                    } catch (_: Exception) {
+                    }
+                    throw e
+                }
             }
 
             bluetoothSocket = socket
@@ -820,48 +828,71 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun sendRawElmCommand(cmd: String, timeoutMs: Int): String {
         synchronized(ioLock) {
-            val out = outputStream ?: throw IllegalStateException("OBD2 desconectado")
-            val inp = inputStream ?: throw IllegalStateException("OBD2 desconectado")
+            val sock = bluetoothSocket
+            val out = outputStream
+            val inp = inputStream
+            if (sock == null || !sock.isConnected || out == null || inp == null) {
+                closeRfcommSocket()
+                throw IllegalStateException("OBD2 desconectado")
+            }
 
             try {
                 while (inp.available() > 0) {
-                    inp.read()
-                }
-            } catch (_: Exception) {
-            }
-
-            val payload = "${cmd.trim()}\r".toByteArray(Charsets.US_ASCII)
-            out.write(payload)
-            out.flush()
-
-            val sb = StringBuilder()
-            val buffer = ByteArray(128)
-            val startTime = System.currentTimeMillis()
-            var promptReceived = false
-            while (System.currentTimeMillis() - startTime < timeoutMs && !promptReceived) {
-                val avail = inp.available()
-                if (avail > 0) {
-                    val toRead = if (avail > buffer.size) buffer.size else avail
-                    val bytesRead = inp.read(buffer, 0, toRead)
-                    if (bytesRead <= 0) break
-                    for (i in 0 until bytesRead) {
-                        val ch = buffer[i].toInt().toChar()
-                        if (ch == '>') {
-                            promptReceived = true
-                            break
-                        }
-                        sb.append(ch)
+                    if (inp.read() < 0) {
+                        closeRfcommSocket()
+                        throw IllegalStateException("Conexión Bluetooth cerrada (EOF)")
                     }
-                } else {
-                    Thread.sleep(1)
                 }
-            }
 
-            return sb.toString()
-                .replace("\r", " ")
-                .replace("\n", " ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
+                val payload = "${cmd.trim()}\r".toByteArray(Charsets.US_ASCII)
+                out.write(payload)
+                out.flush()
+
+                val sb = StringBuilder()
+                val buffer = ByteArray(128)
+                val startTime = System.currentTimeMillis()
+                var promptReceived = false
+                while (System.currentTimeMillis() - startTime < timeoutMs && !promptReceived) {
+                    if (!sock.isConnected) {
+                        closeRfcommSocket()
+                        throw IllegalStateException("Conexión Bluetooth perdida")
+                    }
+                    val avail = inp.available()
+                    if (avail > 0) {
+                        val toRead = if (avail > buffer.size) buffer.size else avail
+                        val bytesRead = inp.read(buffer, 0, toRead)
+                        if (bytesRead < 0) {
+                            closeRfcommSocket()
+                            throw IllegalStateException("Conexión Bluetooth cerrada por el adaptador")
+                        }
+                        if (bytesRead == 0) break
+                        for (i in 0 until bytesRead) {
+                            val ch = buffer[i].toInt().toChar()
+                            if (ch == '>') {
+                                promptReceived = true
+                                break
+                            }
+                            sb.append(ch)
+                        }
+                    } else {
+                        Thread.sleep(1)
+                    }
+                }
+
+                val cleaned = sb.toString()
+                    .replace("\r", " ")
+                    .replace("\n", " ")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+
+                if (!promptReceived && cleaned.isEmpty()) {
+                    return "TIMEOUT"
+                }
+                return cleaned
+            } catch (e: Exception) {
+                closeRfcommSocket()
+                throw e
+            }
         }
     }
 

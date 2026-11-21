@@ -3,14 +3,40 @@ import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import '../models/obd_telemetry_frame.dart';
 
+/// Perfil dinámico de sondeo K-Line (10.4 kbps) para evitar saturar el bus Bluetooth:
+/// - `rpmOnly`: 100% del ancho de banda a RPM (`010C1`) cuando el piloto ve el tacómetro.
+/// - `engineParameters`: 0% RPM; dedica el bus únicamente a los mini-gauges del motor F4R.
+/// - `backgroundMinimal`: carga mínima en pestañas secundarias (solo velocidad `010D` lenta para odómetro).
+enum ObdPollingProfile {
+  rpmOnly,
+  engineParameters,
+  backgroundMinimal,
+}
+
+/// Estado real del enlace Bluetooth RFCOMM + ECU Siemens Sirius 34
+enum ObdLinkStatus {
+  disconnected,
+  connecting,
+  adapterConnectedEcuWaiting,
+  connectedEcuReady,
+  reconnecting,
+}
+
 /// Contrato Polimórfico de Origen de Datos OBD-II (ECU Siemens Sirius 34 - KWP2000).
 abstract class ObdDataSource {
   Stream<ObdTelemetryFrame> get telemetryStream;
   Stream<List<String>> get rawTerminalLogStream;
+  Stream<ObdLinkStatus> get linkStatusStream;
   ObdTelemetryFrame get currentFrame;
   List<String> get currentLogs;
+  ObdLinkStatus get currentLinkStatus;
   bool get isConnected;
   String get sourceName;
+
+  void setPollingProfile(
+    ObdPollingProfile profile, {
+    bool includeExtendedPids = false,
+  });
 
   Future<void> connect({String? macAddress});
   Future<void> disconnect();
@@ -103,7 +129,6 @@ class Sirius34KwpParser {
       return const <Sirius34DtcFault>[];
     }
 
-    // Si hay un número impar de bytes (ej. 43 01 01 30 en CAN/ISO15765), el primer byte es el conteo de DTCs
     final byteCount = payload.length ~/ 2;
     if (byteCount.isOdd && payload.length >= 6) {
       payload = payload.substring(2);
@@ -116,7 +141,7 @@ class Sirius34KwpParser {
       final byteA = int.tryParse(payload.substring(i, i + 2), radix: 16);
       final byteB = int.tryParse(payload.substring(i + 2, i + 4), radix: 16);
       if (byteA == null || byteB == null) continue;
-      if (byteA == 0 && byteB == 0) continue; // Slot vacío P0000
+      if (byteA == 0 && byteB == 0) continue;
 
       const prefixes = <String>['P', 'C', 'B', 'U'];
       final prefix = prefixes[(byteA >> 6) & 0x03];
@@ -222,6 +247,7 @@ class Sirius34KwpParser {
       'BUS INIT',
       'SEARCHING...',
       'SEARCHING',
+      'TIMEOUT',
       'NO DATA',
       'NODATA',
       'STOPPED',
@@ -264,13 +290,13 @@ class Sirius34KwpParser {
 
   /// Estima la marcha engranada en la caja JC5-129 del Clio RS 172 a partir de relación RPM/kmh
   static int estimateJc5Gear(double rpm, int speedKmh) {
-    if (speedKmh < 4 || rpm < 700) return 0; // Neutral / Ralentí
+    if (speedKmh < 4 || rpm < 700) return 0;
     final ratio = rpm / speedKmh;
-    if (ratio > 105) return 1; // 1ra (3.09:1 -> ~60 km/h a 7250 RPM)
-    if (ratio > 64) return 2;  // 2da (1.86:1 -> ~99 km/h a 7250 RPM)
-    if (ratio > 45) return 3;  // 3ra (1.32:1 -> ~140 km/h a 7250 RPM)
-    if (ratio > 35) return 4;  // 4ta (1.03:1 -> ~180 km/h a 7250 RPM)
-    return 5;                  // 5ta (0.79:1 -> ~232 km/h a 7250 RPM)
+    if (ratio > 105) return 1;
+    if (ratio > 64) return 2;
+    if (ratio > 45) return 3;
+    if (ratio > 35) return 4;
+    return 5;
   }
 }
 
@@ -286,22 +312,29 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
       StreamController<ObdTelemetryFrame>.broadcast();
   final StreamController<List<String>> _logController =
       StreamController<List<String>>.broadcast();
+  final StreamController<ObdLinkStatus> _linkStatusController =
+      StreamController<ObdLinkStatus>.broadcast();
 
   final List<String> _terminalLogs = <String>[];
-  bool _connected = false;
+  ObdLinkStatus _linkStatus = ObdLinkStatus.disconnected;
+  ObdPollingProfile _pollingProfile = ObdPollingProfile.rpmOnly;
+  bool _includeExtendedPids = false;
   bool _pollingActive = false;
+  bool _ecuReady = false;
+  bool _turboConfigured = false;
   bool _supportsSingleFrameSuffix = false;
+  int _sessionToken = 0;
   Future<void> _serialLock = Future<void>.value();
-  ObdTelemetryFrame _currentFrame = ObdTelemetryFrame.initial(isSimulator: false);
+  ObdTelemetryFrame _currentFrame =
+      ObdTelemetryFrame.initial(isSimulator: false);
 
-  /// Secuencia base de configuración ELM327 (sin ATAT2 agresivo para evitar timeouts prematuros en K-Line)
   static const List<String> kGenuineElm327InitSequence = <String>[
-    'ATZ',   // Reset del microcontrolador ELM327
-    'ATE0',  // Desactivar eco de comandos
-    'ATL0',  // Desactivar saltos de línea (Linefeeds Off)
-    'ATS0',  // Desactivar espacios en respuestas hexadecimales
-    'ATH0',  // Ocultar cabeceras para lectura directa 41XX
-    'ATAT1', // Adaptive Timing estándar (óptimo para KWP2000 10.4 kbps)
+    'ATZ',
+    'ATE0',
+    'ATL0',
+    'ATS0',
+    'ATH0',
+    'ATAT1',
   ];
 
   @override
@@ -311,16 +344,51 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
   Stream<List<String>> get rawTerminalLogStream => _logController.stream;
 
   @override
+  Stream<ObdLinkStatus> get linkStatusStream => _linkStatusController.stream;
+
+  @override
   ObdTelemetryFrame get currentFrame => _currentFrame;
 
   @override
   List<String> get currentLogs => List<String>.unmodifiable(_terminalLogs);
 
   @override
-  bool get isConnected => _connected;
+  ObdLinkStatus get currentLinkStatus => _linkStatus;
+
+  @override
+  bool get isConnected => _linkStatus == ObdLinkStatus.connectedEcuReady;
 
   @override
   String get sourceName => 'ELM327 RFCOMM (KWP2000 / Sirius 34)';
+
+  @override
+  void setPollingProfile(
+    ObdPollingProfile profile, {
+    bool includeExtendedPids = false,
+  }) {
+    final changed = _pollingProfile != profile ||
+        _includeExtendedPids != includeExtendedPids;
+    _pollingProfile = profile;
+    _includeExtendedPids = includeExtendedPids;
+    if (changed && _pollingActive) {
+      final modeLabel = switch (profile) {
+        ObdPollingProfile.rpmOnly => '100% RPM (010C1)',
+        ObdPollingProfile.engineParameters => includeExtendedPids
+            ? 'PARÁMETROS F4R COMPLETOS (0% RPM)'
+            : 'PARÁMETROS F4R BÁSICOS (0% RPM)',
+        ObdPollingProfile.backgroundMinimal => 'MODO MÍNIMO EN SEGUNDO PLANO',
+      };
+      _appendLog('Perfil K-Line cambiado -> $modeLabel');
+    }
+  }
+
+  void _setLinkStatus(ObdLinkStatus nextStatus) {
+    if (_linkStatus == nextStatus) return;
+    _linkStatus = nextStatus;
+    if (!_linkStatusController.isClosed) {
+      _linkStatusController.add(nextStatus);
+    }
+  }
 
   void _appendLog(String entry) {
     final stamp = DateTime.now().toIso8601String().substring(11, 19);
@@ -339,33 +407,71 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
     }
   }
 
+  bool _isTimeoutOrEmpty(String resp) {
+    final upper = resp.trim().toUpperCase();
+    return upper.isEmpty || upper == 'TIMEOUT';
+  }
+
+  bool _isValidElmHandshakeReply(String resp) {
+    if (_isTimeoutOrEmpty(resp)) return false;
+    final upper = resp.toUpperCase();
+    return upper.contains('OK') ||
+        upper.contains('ELM') ||
+        upper.contains('OBD') ||
+        upper.contains('V1.') ||
+        upper.contains('V2.');
+  }
+
   @override
   Future<void> connect({String? macAddress}) async {
     final targetMac = macAddress ?? '00:1D:A5:68:98:8B';
+    final token = ++_sessionToken;
     _pollingActive = false;
-    _connected = false;
+    _ecuReady = false;
+    _turboConfigured = false;
+    _supportsSingleFrameSuffix = false;
+    _setLinkStatus(ObdLinkStatus.connecting);
     _appendLog('Abriendo socket RFCOMM SPP -> $targetMac...');
 
     try {
-      await _rfcommChannel.invokeMethod<bool>('connect', <String, dynamic>{
-        'address': targetMac,
-      });
+      await _rfcommChannel
+          .invokeMethod<bool>('connect', <String, dynamic>{
+            'address': targetMac,
+          })
+          .timeout(const Duration(seconds: 7));
 
-      // 1. Inicializar chip ELM327 con tiempos seguros
+      if (token != _sessionToken) return;
+
+      var validAtReplies = 0;
       for (final cmd in kGenuineElm327InitSequence) {
+        if (token != _sessionToken) return;
         final isReset = cmd == 'ATZ';
         final resp = await _sendCommandSerialized(
           cmd,
-          timeoutMs: isReset ? 2500 : 800,
+          timeoutMs: isReset ? 2200 : 800,
         );
         _appendLog('TX: $cmd  =>  RX: $resp');
+        if (_isValidElmHandshakeReply(resp)) {
+          validAtReplies++;
+        }
         if (isReset) {
-          await Future<void>.delayed(const Duration(milliseconds: 350));
+          await Future<void>.delayed(const Duration(milliseconds: 300));
         }
       }
 
-      // 2. Leer voltaje del pin 16 OBD2 inmediatamente con ATRV (funciona incluso antes del K-Line Init)
-      final rawVolts = await _sendCommandSerialized('ATRV', timeoutMs: 1200);
+      if (token != _sessionToken) return;
+
+      if (validAtReplies == 0) {
+        _appendLog(
+          'Timeout en puerto Bluetooth: el adaptador ELM327 no respondió a ATZ/ATE0. Cerrando socket para reintentar.',
+        );
+        await _closeSocketSilently();
+        _resetFrameToZero();
+        _setLinkStatus(ObdLinkStatus.reconnecting);
+        throw StateError('Timeout en puerto OBD2: ELM327 sin respuesta.');
+      }
+
+      final rawVolts = await _sendCommandSerialized('ATRV', timeoutMs: 1100);
       _appendLog('TX: ATRV  =>  RX: $rawVolts');
       final initialVolts = Sirius34KwpParser.parseVoltage(rawVolts);
       if (initialVolts != null) {
@@ -376,13 +482,11 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
         _emitCurrentFrame();
       }
 
-      // 3. Negociación de protocolo con la ECU (BUS INIT requiere entre 1.5s y 5.0s)
       var ecuResponding = false;
 
-      // Intento A: ISO 14230-4 KWP2000 Fast Init (ATSP5)
       await _sendCommandSerialized('ATSP5', timeoutMs: 800);
       _appendLog('Iniciando K-Line Fast Init (ATSP5)...');
-      final fastInitResp = await _sendCommandSerialized('010C', timeoutMs: 4500);
+      final fastInitResp = await _sendCommandSerialized('010C', timeoutMs: 4200);
       _appendLog('TX: 010C (ATSP5)  =>  RX: $fastInitResp');
       if (Sirius34KwpParser.parseRpm(fastInitResp) != null ||
           fastInitResp.contains('410C') ||
@@ -390,11 +494,11 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
         ecuResponding = true;
       }
 
-      // Intento B: ISO 14230-4 KWP2000 5-Baud Init (ATSP4) si Fast Init no respondió
-      if (!ecuResponding) {
+      if (!ecuResponding && token == _sessionToken) {
         _appendLog('Probando KWP2000 5-Baud Init (ATSP4)...');
         await _sendCommandSerialized('ATSP4', timeoutMs: 800);
-        final slowInitResp = await _sendCommandSerialized('010C', timeoutMs: 5500);
+        final slowInitResp =
+            await _sendCommandSerialized('010C', timeoutMs: 5200);
         _appendLog('TX: 010C (ATSP4)  =>  RX: $slowInitResp');
         if (Sirius34KwpParser.parseRpm(slowInitResp) != null ||
             slowInitResp.contains('410C') ||
@@ -403,11 +507,11 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
         }
       }
 
-      // Intento C: Detección Automática Multi-Protocolo (ATSP0: ISO 9141-2, KWP, CAN)
-      if (!ecuResponding) {
+      if (!ecuResponding && token == _sessionToken) {
         _appendLog('Activando búsqueda automática de protocolo (ATSP0)...');
         await _sendCommandSerialized('ATSP0', timeoutMs: 800);
-        final autoInitResp = await _sendCommandSerialized('010C', timeoutMs: 6500);
+        final autoInitResp =
+            await _sendCommandSerialized('010C', timeoutMs: 6000);
         _appendLog('TX: 010C (ATSP0)  =>  RX: $autoInitResp');
         if (Sirius34KwpParser.parseRpm(autoInitResp) != null ||
             autoInitResp.contains('410C') ||
@@ -416,230 +520,450 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
         }
       }
 
+      if (token != _sessionToken) return;
+
       final activeProto = await _sendCommandSerialized('ATDP', timeoutMs: 1000);
       _appendLog('Protocolo activo: $activeProto');
-      if (!ecuResponding) {
-        _appendLog(
-          'AVISO: Adaptador conectado, pero la ECU aún no responde PIDs. Verifica que la llave esté en CONTACTO (ON) o motor encendido.',
-        );
-      } else {
-        // 4. Optimización de latencia post-BUS INIT:
-        // Reducir el tiempo de espera post-trama a 100ms (ATST19) y activar Adaptive Timing agresivo (ATAT2)
-        await _sendCommandSerialized('ATST19', timeoutMs: 500);
-        await _sendCommandSerialized('ATAT2', timeoutMs: 500);
 
-        // Probar si el chip ELM327 soporta el sufijo de 1 sola respuesta ("010C1")
-        // que evita esperar 200ms a una segunda ECU inexistente y duplica los Hz de RPM.
-        final singleFrameTest =
-            await _sendCommandSerialized('010C1', timeoutMs: 900);
-        final testRpmVal = Sirius34KwpParser.parseRpm(singleFrameTest);
-        if (testRpmVal != null && !singleFrameTest.contains('?')) {
-          _supportsSingleFrameSuffix = true;
-          _currentFrame = _currentFrame.copyWith(rpm: testRpmVal);
-          _appendLog('Modo Turbo K-Line activo (010C1 Single-Frame + ATST19 + ATAT2)');
-        } else {
-          _supportsSingleFrameSuffix = false;
-          _appendLog('Modo K-Line rápido activo (ATST19 + ATAT2)');
-        }
+      _ecuReady = ecuResponding;
+      if (ecuResponding) {
+        await _configureTurboKLineAndSeedCoolant();
+        _setLinkStatus(ObdLinkStatus.connectedEcuReady);
+      } else {
+        _appendLog(
+          'Adaptador ELM327 listo, pero la ECU no responde aún. Esperando contacto (llave en ON)...',
+        );
+        _setLinkStatus(ObdLinkStatus.adapterConnectedEcuWaiting);
       }
 
       _currentFrame = _currentFrame.copyWith(
-        activeProtocol: activeProto.isNotEmpty ? activeProto : 'ISO 14230-4 KWP2000',
+        activeProtocol:
+            activeProto.isNotEmpty && activeProto != 'TIMEOUT'
+                ? activeProto
+                : 'ISO 14230-4 KWP2000',
         timestamp: DateTime.now(),
       );
       _emitCurrentFrame();
 
-      _connected = true;
       _pollingActive = true;
-      unawaited(_startKLinePriorityPollingLoop());
+      unawaited(_startAdaptivePollingLoop(token));
     } catch (e) {
+      if (token != _sessionToken) return;
       _appendLog('Error al conectar con adaptador OBD2: $e');
-      _connected = false;
       _pollingActive = false;
+      _ecuReady = false;
+      await _closeSocketSilently();
+      _resetFrameToZero();
+      _setLinkStatus(ObdLinkStatus.reconnecting);
       rethrow;
     }
+  }
+
+  Future<void> _configureTurboKLineAndSeedCoolant() async {
+    if (_turboConfigured) return;
+    await _sendCommandSerialized('ATST19', timeoutMs: 500);
+    await _sendCommandSerialized('ATAT2', timeoutMs: 500);
+
+    final singleFrameTest =
+        await _sendCommandSerialized('010C1', timeoutMs: 900);
+    final testRpmVal = Sirius34KwpParser.parseRpm(singleFrameTest);
+    if (testRpmVal != null && !singleFrameTest.contains('?')) {
+      _supportsSingleFrameSuffix = true;
+      _currentFrame = _currentFrame.copyWith(rpm: testRpmVal);
+      _appendLog('Modo Turbo K-Line activo (010C1 Single-Frame + ATST19 + ATAT2)');
+    } else {
+      _supportsSingleFrameSuffix = false;
+      _appendLog('Modo K-Line rápido activo (ATST19 + ATAT2)');
+    }
+
+    final initTempRaw =
+        await _sendCommandSerialized(_pidCmd('0105'), timeoutMs: 900);
+    final initTemp = Sirius34KwpParser.parseTemperatureC(initTempRaw, '4105');
+    if (initTemp != null) {
+      _currentFrame = _currentFrame.copyWith(
+        coolantTempC: initTemp,
+        timestamp: DateTime.now(),
+      );
+      _emitCurrentFrame();
+    }
+    _turboConfigured = true;
   }
 
   String _pidCmd(String basePid) =>
       _supportsSingleFrameSuffix ? '${basePid}1' : basePid;
 
-  /// Multiplexor K-Line con Prioridad Ultra-Alta en RPM (`010C1`):
-  /// En lugar de pedir 6 sensores seguidos (lo que congelaba las RPM por ~1.5s),
-  /// intercala 2 a 3 lecturas de RPM seguidas por cada 1 sensor secundario en rotación:
-  /// `[RPM -> RPM -> Sensor Secundario -> RPM -> RPM -> Sensor Secundario...]`
-  /// dedicando ~75% del ancho de banda de 10.4 kbps exclusivamente al tacómetro.
-  Future<void> _startKLinePriorityPollingLoop() async {
+  void _resetFrameToZero() {
+    _currentFrame = ObdTelemetryFrame.initial(isSimulator: false);
+    _emitCurrentFrame();
+  }
+
+  Future<void> _closeSocketSilently() async {
+    try {
+      await _rfcommChannel.invokeMethod<bool>('disconnect');
+    } catch (_) {}
+  }
+
+  Future<void> _startAdaptivePollingLoop(int token) async {
     var responsesInWindow = 0;
     var windowStart = DateTime.now();
+    var lastCoolantRefreshInRpmMode = DateTime.now();
+    var paramSlotIndex = 0;
     var cycleCount = 0;
-    var secondarySlotIndex = 0;
+    var consecutiveTimeouts = 0;
+    var consecutiveIoErrors = 0;
 
-    // Secuencia rotativa de sensores secundarios (1 solo por ciclo para nunca frenar las RPM)
-    const secondarySchedule = <String>[
-      '0111', // TPS (Acelerador)
-      '010D', // Velocidad km/h
-      '0105', // Temperatura Refrigerante (°C)
-      '0111', // TPS (Acelerador)
-      '010D', // Velocidad km/h
-      '010B', // Presión Colector MAP (kPa)
-      '0111', // TPS (Acelerador)
-      '010D', // Velocidad km/h
-      '0104', // Carga Calculada Motor (%)
-      '0111', // TPS (Acelerador)
-      '010D', // Velocidad km/h
-      '010E', // Avance de Encendido (°)
-      '010F', // Temperatura Admisión IAT (°C)
-      'ATRV', // Voltaje Batería (V)
-    ];
-
-    while (_pollingActive && _connected) {
+    while (_pollingActive && token == _sessionToken) {
       try {
         cycleCount++;
 
-        // -------------------------------------------------------------------
-        // PASO 1: Ráfaga de RPM (2 lecturas consecutivas de 010C1 emitidas al instante)
-        // -------------------------------------------------------------------
-        var ecuReady = true;
-        for (var i = 0; i < 2; i++) {
-          if (!_pollingActive) break;
+        if (!_ecuReady) {
+          final probe = await _sendCommandSerialized('010C', timeoutMs: 1800);
+          if (token != _sessionToken || !_pollingActive) break;
+
+          if (_isTimeoutOrEmpty(probe)) {
+            consecutiveTimeouts++;
+            if (consecutiveTimeouts >= 3) {
+              await _handleLinkLost(
+                token,
+                'Sin respuesta del adaptador OBD2 (timeout). Iniciando reconexión...',
+              );
+              break;
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 1200));
+            continue;
+          }
+
+          consecutiveTimeouts = 0;
+          consecutiveIoErrors = 0;
+          final probeRpm = Sirius34KwpParser.parseRpm(probe);
+          if (probeRpm != null) {
+            _ecuReady = true;
+            await _configureTurboKLineAndSeedCoolant();
+            _setLinkStatus(ObdLinkStatus.connectedEcuReady);
+            _currentFrame = _currentFrame.copyWith(
+              rpm: probeRpm,
+              isSimulator: false,
+              timestamp: DateTime.now(),
+            );
+            _emitCurrentFrame();
+          } else {
+            final rawVoltsWait =
+                await _sendCommandSerialized('ATRV', timeoutMs: 900);
+            if (_isTimeoutOrEmpty(rawVoltsWait)) {
+              consecutiveTimeouts++;
+              if (consecutiveTimeouts >= 3) {
+                await _handleLinkLost(
+                  token,
+                  'El adaptador ELM327 dejó de responder. Reconectando...',
+                );
+                break;
+              }
+            } else {
+              final voltsWait = Sirius34KwpParser.parseVoltage(rawVoltsWait);
+              if (voltsWait != null) {
+                _currentFrame = _currentFrame.copyWith(
+                  batteryVolts: voltsWait,
+                  rpm: 0.0,
+                  speedKmh: 0,
+                  timestamp: DateTime.now(),
+                );
+                _emitCurrentFrame();
+              }
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 1800));
+          }
+          continue;
+        }
+
+        final activeProfile = _pollingProfile;
+
+        if (activeProfile == ObdPollingProfile.rpmOnly) {
           final rawRpm = await _sendCommandSerialized(
             _pidCmd('010C'),
             timeoutMs: 900,
           );
-          responsesInWindow++;
+          if (token != _sessionToken || !_pollingActive) break;
 
-          if (rawRpm.contains('UNABLE') || rawRpm.contains('ERROR')) {
-            ecuReady = false;
-            if (cycleCount % 4 == 1) {
-              _appendLog('Esperando respuesta de ECU (llave en ON)... [$rawRpm]');
-            }
-            final rawVoltsWait =
-                await _sendCommandSerialized('ATRV', timeoutMs: 900);
-            final voltsWait = Sirius34KwpParser.parseVoltage(rawVoltsWait);
-            if (voltsWait != null) {
-              _currentFrame = _currentFrame.copyWith(
-                batteryVolts: voltsWait,
-                timestamp: DateTime.now(),
+          if (_isTimeoutOrEmpty(rawRpm)) {
+            consecutiveTimeouts++;
+            if (consecutiveTimeouts >= 4) {
+              await _handleLinkLost(
+                token,
+                'Timeout consecutivo en Línea K (adaptador desconectado). Reconectando...',
               );
-              _emitCurrentFrame();
+              break;
             }
-            await Future<void>.delayed(const Duration(milliseconds: 800));
-            break;
+            continue;
           }
 
-          final parsedRpm = Sirius34KwpParser.parseRpm(rawRpm);
-          if (parsedRpm != null) {
-            final gear = Sirius34KwpParser.estimateJc5Gear(
-              parsedRpm,
-              _currentFrame.speedKmh,
+          consecutiveTimeouts = 0;
+          consecutiveIoErrors = 0;
+
+          if (_isEcuUnavailableReply(rawRpm)) {
+            _ecuReady = false;
+            _setLinkStatus(ObdLinkStatus.adapterConnectedEcuWaiting);
+            _appendLog('ECU sin respuesta (llave apagada / $rawRpm). En espera...');
+            _currentFrame = _currentFrame.copyWith(
+              rpm: 0.0,
+              speedKmh: 0,
+              kLineHz: 0,
+              timestamp: DateTime.now(),
             );
+            _emitCurrentFrame();
+            await Future<void>.delayed(const Duration(milliseconds: 1200));
+            continue;
+          }
+
+          responsesInWindow++;
+          final parsedRpm = Sirius34KwpParser.parseRpm(rawRpm);
+          final kLineHz = _updateKLineHz(
+            responsesInWindow: responsesInWindow,
+            windowStart: windowStart,
+            onReset: () {
+              responsesInWindow = 0;
+              windowStart = DateTime.now();
+            },
+          );
+
+          if (parsedRpm != null) {
             final vvtOn = _currentFrame.coolantTempC >= 75.0 &&
                 parsedRpm >= 5150.0 &&
-                parsedRpm <= 7100.0 &&
-                _currentFrame.engineLoad >= 50.0;
-
+                parsedRpm <= 7100.0;
             _currentFrame = _currentFrame.copyWith(
               rpm: parsedRpm,
-              estimatedGear: gear,
               vvtDephaserActive: vvtOn,
+              kLineHz: kLineHz,
               isSimulator: false,
               timestamp: DateTime.now(),
             );
             _emitCurrentFrame();
           }
-        }
 
-        if (!ecuReady || !_pollingActive) continue;
+          if (DateTime.now()
+                  .difference(lastCoolantRefreshInRpmMode)
+                  .inSeconds >=
+              25) {
+            lastCoolantRefreshInRpmMode = DateTime.now();
+            final rawTemp = await _sendCommandSerialized(
+              _pidCmd('0105'),
+              timeoutMs: 900,
+            );
+            final tempC = Sirius34KwpParser.parseTemperatureC(rawTemp, '4105');
+            if (tempC != null) {
+              _currentFrame = _currentFrame.copyWith(
+                coolantTempC: tempC,
+                timestamp: DateTime.now(),
+              );
+              _emitCurrentFrame();
+            }
+          }
 
-        // -------------------------------------------------------------------
-        // PASO 2: Leer 1 solo sensor secundario en rotación (sin bloquear RPM)
-        // -------------------------------------------------------------------
-        final nextSecondaryCmd =
-            secondarySchedule[secondarySlotIndex % secondarySchedule.length];
-        secondarySlotIndex++;
+          if (cycleCount % 16 == 0) {
+            _appendLog(
+              'K-Line RPM (${kLineHz}Hz) -> ${_currentFrame.rpm.round()} RPM | ${_currentFrame.coolantTempC.toStringAsFixed(0)}°C',
+            );
+          }
+        } else if (activeProfile == ObdPollingProfile.engineParameters) {
+          final schedule = _includeExtendedPids
+              ? const <String>[
+                  '0105',
+                  '0111',
+                  '010B',
+                  '010E',
+                  '0104',
+                  '010F',
+                  'ATRV',
+                ]
+              : const <String>[
+                  '0105',
+                  '0111',
+                  '010F',
+                  'ATRV',
+                ];
 
-        final isAtCommand = nextSecondaryCmd.startsWith('AT');
-        final rawSec = await _sendCommandSerialized(
-          isAtCommand ? nextSecondaryCmd : _pidCmd(nextSecondaryCmd),
-          timeoutMs: 900,
-        );
-        responsesInWindow++;
+          final nextCmd = schedule[paramSlotIndex % schedule.length];
+          paramSlotIndex++;
 
-        var speed = _currentFrame.speedKmh;
-        var tps = _currentFrame.throttleTps;
-        var coolant = _currentFrame.coolantTempC;
-        var mapKpa = _currentFrame.intakeMapKpa;
-        var load = _currentFrame.engineLoad;
-        var advance = _currentFrame.timingAdvance;
-        var iat = _currentFrame.intakeAirTempC;
-        var volts = _currentFrame.batteryVolts;
-
-        switch (nextSecondaryCmd) {
-          case '010D':
-            speed = Sirius34KwpParser.parseSpeedKmh(rawSec) ?? speed;
-          case '0111':
-            tps = Sirius34KwpParser.parseThrottleTps(rawSec) ?? tps;
-          case '0105':
-            coolant =
-                Sirius34KwpParser.parseTemperatureC(rawSec, '4105') ?? coolant;
-          case '010B':
-            mapKpa = Sirius34KwpParser.parseMapKpa(rawSec) ?? mapKpa;
-          case '0104':
-            load = Sirius34KwpParser.parseEngineLoad(rawSec) ?? load;
-          case '010E':
-            advance = Sirius34KwpParser.parseTimingAdvance(rawSec) ?? advance;
-          case '010F':
-            iat = Sirius34KwpParser.parseTemperatureC(rawSec, '410F') ?? iat;
-          case 'ATRV':
-            volts = Sirius34KwpParser.parseVoltage(rawSec) ?? volts;
-        }
-
-        final elapsedWindowMs =
-            DateTime.now().difference(windowStart).inMilliseconds;
-        var kLineHz = _currentFrame.kLineHz;
-        if (elapsedWindowMs >= 1000) {
-          kLineHz = ((responsesInWindow * 1000) / elapsedWindowMs)
-              .round()
-              .clamp(1, 25);
-          responsesInWindow = 0;
-          windowStart = DateTime.now();
-        }
-
-        final rpm = _currentFrame.rpm;
-        final gear = Sirius34KwpParser.estimateJc5Gear(rpm, speed);
-        final vvtOn =
-            coolant >= 75.0 && rpm >= 5150.0 && rpm <= 7100.0 && load >= 50.0;
-
-        _currentFrame = _currentFrame.copyWith(
-          speedKmh: speed,
-          throttleTps: tps,
-          engineLoad: load,
-          timingAdvance: advance,
-          intakeMapKpa: mapKpa,
-          coolantTempC: coolant,
-          intakeAirTempC: iat,
-          batteryVolts: volts,
-          estimatedGear: gear,
-          vvtDephaserActive: vvtOn,
-          kLineHz: kLineHz,
-          isSimulator: false,
-          timestamp: DateTime.now(),
-        );
-        _emitCurrentFrame();
-
-        if (cycleCount % 8 == 0) {
-          _appendLog(
-            'K-Line (${kLineHz}Hz) -> ${rpm.round()} RPM | ${speed}km/h | TPS:${tps.toStringAsFixed(0)}% | ${coolant.toStringAsFixed(0)}°C | ${volts.toStringAsFixed(1)}V',
+          final isAt = nextCmd.startsWith('AT');
+          final rawResp = await _sendCommandSerialized(
+            isAt ? nextCmd : _pidCmd(nextCmd),
+            timeoutMs: 900,
           );
+          if (token != _sessionToken || !_pollingActive) break;
+
+          if (_isTimeoutOrEmpty(rawResp)) {
+            consecutiveTimeouts++;
+            if (consecutiveTimeouts >= 4) {
+              await _handleLinkLost(
+                token,
+                'Timeout consecutivo leyendo sensores F4R. Reconectando...',
+              );
+              break;
+            }
+            continue;
+          }
+
+          consecutiveTimeouts = 0;
+          consecutiveIoErrors = 0;
+
+          if (!isAt && _isEcuUnavailableReply(rawResp)) {
+            _ecuReady = false;
+            _setLinkStatus(ObdLinkStatus.adapterConnectedEcuWaiting);
+            await Future<void>.delayed(const Duration(milliseconds: 1200));
+            continue;
+          }
+
+          responsesInWindow++;
+          final kLineHz = _updateKLineHz(
+            responsesInWindow: responsesInWindow,
+            windowStart: windowStart,
+            onReset: () {
+              responsesInWindow = 0;
+              windowStart = DateTime.now();
+            },
+          );
+
+          var tps = _currentFrame.throttleTps;
+          var coolant = _currentFrame.coolantTempC;
+          var mapKpa = _currentFrame.intakeMapKpa;
+          var load = _currentFrame.engineLoad;
+          var advance = _currentFrame.timingAdvance;
+          var iat = _currentFrame.intakeAirTempC;
+          var volts = _currentFrame.batteryVolts;
+
+          switch (nextCmd) {
+            case '0111':
+              tps = Sirius34KwpParser.parseThrottleTps(rawResp) ?? tps;
+            case '0105':
+              coolant =
+                  Sirius34KwpParser.parseTemperatureC(rawResp, '4105') ??
+                      coolant;
+            case '010B':
+              mapKpa = Sirius34KwpParser.parseMapKpa(rawResp) ?? mapKpa;
+            case '0104':
+              load = Sirius34KwpParser.parseEngineLoad(rawResp) ?? load;
+            case '010E':
+              advance =
+                  Sirius34KwpParser.parseTimingAdvance(rawResp) ?? advance;
+            case '010F':
+              iat = Sirius34KwpParser.parseTemperatureC(rawResp, '410F') ?? iat;
+            case 'ATRV':
+              volts = Sirius34KwpParser.parseVoltage(rawResp) ?? volts;
+          }
+
+          _currentFrame = _currentFrame.copyWith(
+            throttleTps: tps,
+            engineLoad: load,
+            timingAdvance: advance,
+            intakeMapKpa: mapKpa,
+            coolantTempC: coolant,
+            intakeAirTempC: iat,
+            batteryVolts: volts,
+            kLineHz: kLineHz,
+            isSimulator: false,
+            timestamp: DateTime.now(),
+          );
+          _emitCurrentFrame();
+
+          if (cycleCount % 12 == 0) {
+            _appendLog(
+              'K-Line F4R (${kLineHz}Hz) -> ${coolant.toStringAsFixed(0)}°C | TPS:${tps.toStringAsFixed(0)}% | MAP:${mapKpa}kPa | ${volts.toStringAsFixed(1)}V',
+            );
+          }
+        } else {
+          final rawSpd = await _sendCommandSerialized(
+            _pidCmd('010D'),
+            timeoutMs: 900,
+          );
+          if (token != _sessionToken || !_pollingActive) break;
+
+          if (_isTimeoutOrEmpty(rawSpd)) {
+            consecutiveTimeouts++;
+            if (consecutiveTimeouts >= 3) {
+              await _handleLinkLost(
+                token,
+                'Conexión OBD2 perdida en segundo plano. Reconectando...',
+              );
+              break;
+            }
+          } else {
+            consecutiveTimeouts = 0;
+            consecutiveIoErrors = 0;
+            if (_isEcuUnavailableReply(rawSpd)) {
+              _ecuReady = false;
+              _setLinkStatus(ObdLinkStatus.adapterConnectedEcuWaiting);
+            } else {
+              final spd = Sirius34KwpParser.parseSpeedKmh(rawSpd);
+              if (spd != null) {
+                _currentFrame = _currentFrame.copyWith(
+                  speedKmh: spd,
+                  kLineHz: 1,
+                  isSimulator: false,
+                  timestamp: DateTime.now(),
+                );
+                _emitCurrentFrame();
+              }
+            }
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 1200));
         }
       } catch (e) {
-        _appendLog('Reintentando lectura K-Line: $e');
-        await Future<void>.delayed(const Duration(milliseconds: 250));
+        if (token != _sessionToken || !_pollingActive) break;
+        consecutiveIoErrors++;
+        final msg = e.toString().toLowerCase();
+        final isFatalSocketError = msg.contains('desconectado') ||
+            msg.contains('closed') ||
+            msg.contains('cerrada') ||
+            msg.contains('broken pipe') ||
+            msg.contains('rfcomm_io_err') ||
+            consecutiveIoErrors >= 2;
+
+        if (isFatalSocketError) {
+          await _handleLinkLost(
+            token,
+            'Socket Bluetooth OBD2 desconectado ($e). Reintentando reconexión...',
+          );
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 300));
       }
     }
   }
 
-  /// Garantiza que ningún comando (ej. lectura de DTCs Modo 03) se cruce con el bucle de PIDs
+  bool _isEcuUnavailableReply(String raw) {
+    final upper = raw.toUpperCase();
+    return upper.contains('UNABLE') ||
+        upper.contains('BUS INIT: ERROR') ||
+        upper.contains('ERROR');
+  }
+
+  int _updateKLineHz({
+    required int responsesInWindow,
+    required DateTime windowStart,
+    required VoidCallback onReset,
+  }) {
+    final elapsedWindowMs =
+        DateTime.now().difference(windowStart).inMilliseconds;
+    if (elapsedWindowMs >= 1000) {
+      final hz =
+          ((responsesInWindow * 1000) / elapsedWindowMs).round().clamp(1, 30);
+      onReset();
+      return hz;
+    }
+    return _currentFrame.kLineHz;
+  }
+
+  Future<void> _handleLinkLost(int token, String reason) async {
+    if (token != _sessionToken) return;
+    _pollingActive = false;
+    _ecuReady = false;
+    _turboConfigured = false;
+    _appendLog(reason);
+    await _closeSocketSilently();
+    _resetFrameToZero();
+    _setLinkStatus(ObdLinkStatus.reconnecting);
+  }
+
   Future<String> _sendCommandSerialized(
     String cmd, {
     int timeoutMs = 1200,
@@ -647,14 +971,16 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
     final completer = Completer<String>();
     _serialLock = _serialLock.then((_) async {
       try {
-        final resp = await _rfcommChannel.invokeMethod<String>(
-          'sendCommand',
-          <String, dynamic>{
-            'command': cmd,
-            'timeoutMs': timeoutMs,
-          },
-        );
-        completer.complete(resp ?? 'NO DATA');
+        final resp = await _rfcommChannel
+            .invokeMethod<String>(
+              'sendCommand',
+              <String, dynamic>{
+                'command': cmd,
+                'timeoutMs': timeoutMs,
+              },
+            )
+            .timeout(Duration(milliseconds: timeoutMs + 800));
+        completer.complete(resp ?? 'TIMEOUT');
       } catch (e) {
         completer.completeError(e);
       }
@@ -664,7 +990,7 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
   @override
   Future<List<Sirius34DtcFault>> readSirius34DtcCodes() async {
-    if (!_connected) {
+    if (!_ecuReady && _linkStatus != ObdLinkStatus.connectedEcuReady) {
       return const <Sirius34DtcFault>[];
     }
     _appendLog('TX: 03 (Consultando códigos de falla DTC reales en ECU...)');
@@ -686,7 +1012,7 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
   @override
   Future<void> clearSirius34DtcCodes() async {
-    if (!_connected) return;
+    if (!_ecuReady && _linkStatus != ObdLinkStatus.connectedEcuReady) return;
     _appendLog('TX: 04 (Borrado de códigos DTC en ECU)...');
     try {
       final raw = await _sendCommandSerialized('04', timeoutMs: 3000);
@@ -698,11 +1024,13 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
   @override
   Future<void> disconnect() async {
+    _sessionToken++;
     _pollingActive = false;
-    _connected = false;
-    try {
-      await _rfcommChannel.invokeMethod<bool>('disconnect');
-    } catch (_) {}
+    _ecuReady = false;
+    _turboConfigured = false;
+    await _closeSocketSilently();
+    _resetFrameToZero();
+    _setLinkStatus(ObdLinkStatus.disconnected);
     _appendLog('Socket RFCOMM cerrado.');
   }
 }
@@ -716,6 +1044,8 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
       StreamController<ObdTelemetryFrame>.broadcast();
   final StreamController<List<String>> _logController =
       StreamController<List<String>>.broadcast();
+  final StreamController<ObdLinkStatus> _linkStatusController =
+      StreamController<ObdLinkStatus>.broadcast();
 
   final List<String> _terminalLogs = <String>[];
   final List<Sirius34DtcFault> _simulatedDtcs = <Sirius34DtcFault>[
@@ -738,6 +1068,7 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
 
   Timer? _physicsTimer;
   bool _connected = false;
+  ObdPollingProfile _pollingProfile = ObdPollingProfile.rpmOnly;
   double _lapTimeSec = 0.0;
   double _coolantTempC = 65.0;
   bool _forceWarmOverride = false;
@@ -758,16 +1089,33 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
   Stream<List<String>> get rawTerminalLogStream => _logController.stream;
 
   @override
+  Stream<ObdLinkStatus> get linkStatusStream => _linkStatusController.stream;
+
+  @override
   ObdTelemetryFrame get currentFrame => _currentFrame;
 
   @override
   List<String> get currentLogs => List<String>.unmodifiable(_terminalLogs);
 
   @override
+  ObdLinkStatus get currentLinkStatus => _connected
+      ? ObdLinkStatus.connectedEcuReady
+      : ObdLinkStatus.disconnected;
+
+  @override
   bool get isConnected => _connected;
 
   @override
-  String get sourceName => 'Simulador Físico Circuito Clio 172 (F4R 736 / JC5-129)';
+  String get sourceName =>
+      'Simulador Físico Circuito Clio 172 (F4R 736 / JC5-129)';
+
+  @override
+  void setPollingProfile(
+    ObdPollingProfile profile, {
+    bool includeExtendedPids = false,
+  }) {
+    _pollingProfile = profile;
+  }
 
   void toggleColdWarmEngineDemo() {
     _forceWarmOverride = !_forceWarmOverride;
@@ -794,10 +1142,15 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
   Future<void> connect({String? macAddress}) async {
     if (_connected) return;
     _connected = true;
+    if (!_linkStatusController.isClosed) {
+      _linkStatusController.add(ObdLinkStatus.connectedEcuReady);
+    }
 
     _appendSimLog('INIT SIMULADOR ELM327 -> ATZ [ELM327 v1.5]');
     _appendSimLog('TX: ATE0 | ATL0 | ATS0 | ATH0 -> OK');
-    _appendSimLog('TX: ATSP5 (ISO 14230-4 KWP2000 Fast Init 10.4 kbps Pin 7) -> BUS INIT: OK');
+    _appendSimLog(
+      'TX: ATSP5 (ISO 14230-4 KWP2000 Fast Init 10.4 kbps Pin 7) -> BUS INIT: OK',
+    );
 
     var logCounter = 0;
     _physicsTimer = Timer.periodic(const Duration(milliseconds: 33), (_) {
@@ -822,13 +1175,20 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
 
       logCounter++;
       if (logCounter % 25 == 0) {
-        final rpmHex =
-            (frame.rpm * 4).round().toRadixString(16).toUpperCase().padLeft(4, '0');
-        final spdHex =
-            frame.speedKmh.toRadixString(16).toUpperCase().padLeft(2, '0');
-        _appendSimLog(
-          'KWP2000 [010C->410C$rpmHex] [010D->410D$spdHex] (${frame.kLineHz} Hz)',
-        );
+        if (_pollingProfile == ObdPollingProfile.rpmOnly) {
+          final rpmHex = (frame.rpm * 4)
+              .round()
+              .toRadixString(16)
+              .toUpperCase()
+              .padLeft(4, '0');
+          _appendSimLog(
+            'KWP2000 [010C1->410C$rpmHex] 100% RPM (${frame.kLineHz} Hz)',
+          );
+        } else {
+          _appendSimLog(
+            'KWP2000 [F4R PARAMS] ${frame.coolantTempC.toStringAsFixed(0)}°C | TPS:${frame.throttleTps.toStringAsFixed(0)}% | MAP:${frame.intakeMapKpa}kPa',
+          );
+        }
       }
     });
   }
@@ -925,7 +1285,7 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
       batteryVolts: double.parse(batteryVolts.toStringAsFixed(2)),
       estimatedGear: gear,
       vvtDephaserActive: vvtActive,
-      kLineHz: 9,
+      kLineHz: _pollingProfile == ObdPollingProfile.rpmOnly ? 14 : 9,
       activeProtocol: 'ISO 14230-4 KWP2000 (Simulador F4R 736 Sirius 34)',
       isSimulator: true,
       timestamp: DateTime.now(),
@@ -943,7 +1303,9 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
   @override
   Future<void> clearSirius34DtcCodes() async {
     _simulatedDtcs.clear();
-    _appendSimLog('TX: 04 -> RX: 44 (Memoria de fallas Sirius 34 limpiada exitosamente)');
+    _appendSimLog(
+      'TX: 04 -> RX: 44 (Memoria de fallas Sirius 34 limpiada exitosamente)',
+    );
   }
 
   @override
@@ -951,5 +1313,8 @@ class Clio172TrackSimulatorDataSource implements ObdDataSource {
     _physicsTimer?.cancel();
     _physicsTimer = null;
     _connected = false;
+    if (!_linkStatusController.isClosed) {
+      _linkStatusController.add(ObdLinkStatus.disconnected);
+    }
   }
 }
