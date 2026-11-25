@@ -39,6 +39,7 @@ import java.io.OutputStream
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.roundToInt
 
 /**
@@ -60,10 +61,18 @@ class MainActivity : FlutterFragmentActivity() {
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     }
 
+    @Volatile
+    private var pendingConnectSocket: BluetoothSocket? = null
+    @Volatile
     private var bluetoothSocket: BluetoothSocket? = null
+    @Volatile
     private var inputStream: InputStream? = null
+    @Volatile
     private var outputStream: OutputStream? = null
+    private val connectGeneration = AtomicInteger(0)
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val connectExecutor = Executors.newCachedThreadPool()
+    private val disconnectExecutor = Executors.newSingleThreadExecutor()
     private val geocodeExecutor = Executors.newSingleThreadExecutor()
     private val ioLock = Any()
 
@@ -116,6 +125,8 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        connectGeneration.incrementAndGet()
+        abortActiveSockets()
         try {
             unregisterReceiver(mediaBroadcastReceiver)
         } catch (_: Exception) {
@@ -267,9 +278,11 @@ class MainActivity : FlutterFragmentActivity() {
                             result.error("BT_PERM", "Permiso Bluetooth pendiente", null)
                             return@setMethodCallHandler
                         }
-                        ioExecutor.execute {
+                        val gen = connectGeneration.incrementAndGet()
+                        abortActiveSockets()
+                        connectExecutor.execute {
                             try {
-                                connectRfcommSocket(address)
+                                connectRfcommSocket(address, gen)
                                 runOnUiThread { result.success(true) }
                             } catch (e: Exception) {
                                 runOnUiThread {
@@ -293,10 +306,11 @@ class MainActivity : FlutterFragmentActivity() {
                         }
                     }
                     "disconnect" -> {
-                        ioExecutor.execute {
-                            closeRfcommSocket()
-                            runOnUiThread { result.success(true) }
+                        connectGeneration.incrementAndGet()
+                        disconnectExecutor.execute {
+                            abortActiveSockets()
                         }
+                        runOnUiThread { result.success(true) }
                     }
                     else -> result.notImplemented()
                 }
@@ -788,41 +802,94 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun connectRfcommSocket(macAddress: String) {
-        synchronized(ioLock) {
-            closeRfcommSocket()
-            val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-            val adapter = btManager.adapter ?: throw IllegalStateException("Bluetooth apagado")
-            val device = adapter.getRemoteDevice(macAddress)
-            try {
-                adapter.cancelDiscovery()
-            } catch (_: Exception) {
-            }
+    private fun connectRfcommSocket(macAddress: String, gen: Int) {
+        val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = btManager.adapter ?: throw IllegalStateException("Bluetooth apagado")
+        val device = adapter.getRemoteDevice(macAddress)
+        try {
+            adapter.cancelDiscovery()
+        } catch (_: Exception) {
+        }
 
-            var socket: BluetoothSocket? = null
+        val strategies: List<() -> BluetoothSocket> = listOf(
+            { device.createInsecureRfcommSocketToServiceRecord(SPP_UUID) },
+            { device.createRfcommSocketToServiceRecord(SPP_UUID) },
+            {
+                val createMethod = device.javaClass.getMethod(
+                    "createRfcommSocket",
+                    Int::class.javaPrimitiveType,
+                )
+                createMethod.invoke(device, 1) as BluetoothSocket
+            },
+        )
+
+        var connectedSocket: BluetoothSocket? = null
+        var lastError: Exception? = null
+        for (strategy in strategies) {
+            if (connectGeneration.get() != gen) {
+                throw IllegalStateException("Conexión cancelada")
+            }
             try {
-                socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                socket.connect()
-            } catch (_: Exception) {
+                connectedSocket = tryOpenSocket(gen, strategy)
+                break
+            } catch (e: Exception) {
+                lastError = e
+                if (connectGeneration.get() != gen) {
+                    throw IllegalStateException("Conexión cancelada")
+                }
+            }
+        }
+
+        val socket = connectedSocket
+            ?: throw (lastError ?: IllegalStateException("No se pudo abrir socket RFCOMM"))
+
+        synchronized(ioLock) {
+            if (connectGeneration.get() != gen) {
                 try {
-                    socket?.close()
+                    socket.close()
                 } catch (_: Exception) {
                 }
-                try {
-                    socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                    socket.connect()
-                } catch (e: Exception) {
-                    try {
-                        socket?.close()
-                    } catch (_: Exception) {
-                    }
-                    throw e
-                }
+                throw IllegalStateException("Conexión cancelada")
             }
-
             bluetoothSocket = socket
-            inputStream = socket?.inputStream
-            outputStream = socket?.outputStream
+            inputStream = socket.inputStream
+            outputStream = socket.outputStream
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun tryOpenSocket(gen: Int, create: () -> BluetoothSocket): BluetoothSocket {
+        if (connectGeneration.get() != gen) {
+            throw IllegalStateException("Conexión cancelada")
+        }
+        val sock = create()
+        pendingConnectSocket = sock
+        if (connectGeneration.get() != gen) {
+            if (pendingConnectSocket === sock) pendingConnectSocket = null
+            try {
+                sock.close()
+            } catch (_: Exception) {
+            }
+            throw IllegalStateException("Conexión cancelada")
+        }
+        try {
+            sock.connect()
+            if (connectGeneration.get() != gen) {
+                try {
+                    sock.close()
+                } catch (_: Exception) {
+                }
+                throw IllegalStateException("Conexión cancelada")
+            }
+            if (pendingConnectSocket === sock) pendingConnectSocket = null
+            return sock
+        } catch (e: Exception) {
+            if (pendingConnectSocket === sock) pendingConnectSocket = null
+            try {
+                sock.close()
+            } catch (_: Exception) {
+            }
+            throw e
         }
     }
 
@@ -896,18 +963,35 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    private fun closeRfcommSocket() {
-        synchronized(ioLock) {
-            try {
-                inputStream?.close()
-                outputStream?.close()
-                bluetoothSocket?.close()
-            } catch (_: Exception) {
-            } finally {
-                inputStream = null
-                outputStream = null
-                bluetoothSocket = null
-            }
+    private fun abortActiveSockets() {
+        val pending = pendingConnectSocket
+        pendingConnectSocket = null
+        val inp = inputStream
+        inputStream = null
+        val out = outputStream
+        outputStream = null
+        val sock = bluetoothSocket
+        bluetoothSocket = null
+
+        try {
+            pending?.close()
+        } catch (_: Exception) {
         }
+        try {
+            inp?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            out?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            sock?.close()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun closeRfcommSocket() {
+        abortActiveSockets()
     }
 }

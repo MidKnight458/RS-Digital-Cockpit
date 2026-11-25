@@ -417,6 +417,7 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
     final upper = resp.toUpperCase();
     return upper.contains('OK') ||
         upper.contains('ELM') ||
+        upper.contains('STN') ||
         upper.contains('OBD') ||
         upper.contains('V1.') ||
         upper.contains('V2.');
@@ -438,7 +439,7 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
           .invokeMethod<bool>('connect', <String, dynamic>{
             'address': targetMac,
           })
-          .timeout(const Duration(seconds: 7));
+          .timeout(const Duration(seconds: 18));
 
       if (token != _sessionToken) return;
 
@@ -448,14 +449,16 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
         final isReset = cmd == 'ATZ';
         final resp = await _sendCommandSerialized(
           cmd,
-          timeoutMs: isReset ? 2200 : 800,
+          timeoutMs: isReset ? 2500 : 1000,
+          expectedToken: token,
         );
+        if (token != _sessionToken) return;
         _appendLog('TX: $cmd  =>  RX: $resp');
         if (_isValidElmHandshakeReply(resp)) {
           validAtReplies++;
         }
         if (isReset) {
-          await Future<void>.delayed(const Duration(milliseconds: 300));
+          await Future<void>.delayed(const Duration(milliseconds: 350));
         }
       }
 
@@ -463,15 +466,20 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
       if (validAtReplies == 0) {
         _appendLog(
-          'Timeout en puerto Bluetooth: el adaptador ELM327 no respondió a ATZ/ATE0. Cerrando socket para reintentar.',
+          'Timeout en puerto Bluetooth: el adaptador ELM327 no respondió a ATZ/ATE0. Cerrando socket.',
         );
         await _closeSocketSilently();
         _resetFrameToZero();
-        _setLinkStatus(ObdLinkStatus.reconnecting);
+        _setLinkStatus(ObdLinkStatus.disconnected);
         throw StateError('Timeout en puerto OBD2: ELM327 sin respuesta.');
       }
 
-      final rawVolts = await _sendCommandSerialized('ATRV', timeoutMs: 1100);
+      final rawVolts = await _sendCommandSerialized(
+        'ATRV',
+        timeoutMs: 1200,
+        expectedToken: token,
+      );
+      if (token != _sessionToken) return;
       _appendLog('TX: ATRV  =>  RX: $rawVolts');
       final initialVolts = Sirius34KwpParser.parseVoltage(rawVolts);
       if (initialVolts != null) {
@@ -484,9 +492,15 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
       var ecuResponding = false;
 
-      await _sendCommandSerialized('ATSP5', timeoutMs: 800);
+      await _sendCommandSerialized('ATSP5', timeoutMs: 800, expectedToken: token);
+      if (token != _sessionToken) return;
       _appendLog('Iniciando K-Line Fast Init (ATSP5)...');
-      final fastInitResp = await _sendCommandSerialized('010C', timeoutMs: 4200);
+      final fastInitResp = await _sendCommandSerialized(
+        '010C',
+        timeoutMs: 4200,
+        expectedToken: token,
+      );
+      if (token != _sessionToken) return;
       _appendLog('TX: 010C (ATSP5)  =>  RX: $fastInitResp');
       if (Sirius34KwpParser.parseRpm(fastInitResp) != null ||
           fastInitResp.contains('410C') ||
@@ -496,9 +510,14 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
       if (!ecuResponding && token == _sessionToken) {
         _appendLog('Probando KWP2000 5-Baud Init (ATSP4)...');
-        await _sendCommandSerialized('ATSP4', timeoutMs: 800);
-        final slowInitResp =
-            await _sendCommandSerialized('010C', timeoutMs: 5200);
+        await _sendCommandSerialized('ATSP4', timeoutMs: 800, expectedToken: token);
+        if (token != _sessionToken) return;
+        final slowInitResp = await _sendCommandSerialized(
+          '010C',
+          timeoutMs: 5200,
+          expectedToken: token,
+        );
+        if (token != _sessionToken) return;
         _appendLog('TX: 010C (ATSP4)  =>  RX: $slowInitResp');
         if (Sirius34KwpParser.parseRpm(slowInitResp) != null ||
             slowInitResp.contains('410C') ||
@@ -509,9 +528,14 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
       if (!ecuResponding && token == _sessionToken) {
         _appendLog('Activando búsqueda automática de protocolo (ATSP0)...');
-        await _sendCommandSerialized('ATSP0', timeoutMs: 800);
-        final autoInitResp =
-            await _sendCommandSerialized('010C', timeoutMs: 6000);
+        await _sendCommandSerialized('ATSP0', timeoutMs: 800, expectedToken: token);
+        if (token != _sessionToken) return;
+        final autoInitResp = await _sendCommandSerialized(
+          '010C',
+          timeoutMs: 6000,
+          expectedToken: token,
+        );
+        if (token != _sessionToken) return;
         _appendLog('TX: 010C (ATSP0)  =>  RX: $autoInitResp');
         if (Sirius34KwpParser.parseRpm(autoInitResp) != null ||
             autoInitResp.contains('410C') ||
@@ -522,12 +546,18 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
       if (token != _sessionToken) return;
 
-      final activeProto = await _sendCommandSerialized('ATDP', timeoutMs: 1000);
+      final activeProto = await _sendCommandSerialized(
+        'ATDP',
+        timeoutMs: 1000,
+        expectedToken: token,
+      );
+      if (token != _sessionToken) return;
       _appendLog('Protocolo activo: $activeProto');
 
       _ecuReady = ecuResponding;
       if (ecuResponding) {
-        await _configureTurboKLineAndSeedCoolant();
+        await _configureTurboKLineAndSeedCoolant(token: token);
+        if (token != _sessionToken) return;
         _setLinkStatus(ObdLinkStatus.connectedEcuReady);
       } else {
         _appendLog(
@@ -554,18 +584,24 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
       _ecuReady = false;
       await _closeSocketSilently();
       _resetFrameToZero();
-      _setLinkStatus(ObdLinkStatus.reconnecting);
+      _setLinkStatus(ObdLinkStatus.disconnected);
       rethrow;
     }
   }
 
-  Future<void> _configureTurboKLineAndSeedCoolant() async {
+  Future<void> _configureTurboKLineAndSeedCoolant({int? token}) async {
     if (_turboConfigured) return;
-    await _sendCommandSerialized('ATST19', timeoutMs: 500);
-    await _sendCommandSerialized('ATAT2', timeoutMs: 500);
+    await _sendCommandSerialized('ATST19', timeoutMs: 500, expectedToken: token);
+    if (token != null && token != _sessionToken) return;
+    await _sendCommandSerialized('ATAT2', timeoutMs: 500, expectedToken: token);
+    if (token != null && token != _sessionToken) return;
 
-    final singleFrameTest =
-        await _sendCommandSerialized('010C1', timeoutMs: 900);
+    final singleFrameTest = await _sendCommandSerialized(
+      '010C1',
+      timeoutMs: 900,
+      expectedToken: token,
+    );
+    if (token != null && token != _sessionToken) return;
     final testRpmVal = Sirius34KwpParser.parseRpm(singleFrameTest);
     if (testRpmVal != null && !singleFrameTest.contains('?')) {
       _supportsSingleFrameSuffix = true;
@@ -576,8 +612,12 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
       _appendLog('Modo K-Line rápido activo (ATST19 + ATAT2)');
     }
 
-    final initTempRaw =
-        await _sendCommandSerialized(_pidCmd('0105'), timeoutMs: 900);
+    final initTempRaw = await _sendCommandSerialized(
+      _pidCmd('0105'),
+      timeoutMs: 900,
+      expectedToken: token,
+    );
+    if (token != null && token != _sessionToken) return;
     final initTemp = Sirius34KwpParser.parseTemperatureC(initTempRaw, '4105');
     if (initTemp != null) {
       _currentFrame = _currentFrame.copyWith(
@@ -599,7 +639,9 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
 
   Future<void> _closeSocketSilently() async {
     try {
-      await _rfcommChannel.invokeMethod<bool>('disconnect');
+      await _rfcommChannel
+          .invokeMethod<bool>('disconnect')
+          .timeout(const Duration(seconds: 2));
     } catch (_) {}
   }
 
@@ -967,9 +1009,14 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
   Future<String> _sendCommandSerialized(
     String cmd, {
     int timeoutMs = 1200,
+    int? expectedToken,
   }) {
     final completer = Completer<String>();
     _serialLock = _serialLock.then((_) async {
+      if (expectedToken != null && expectedToken != _sessionToken) {
+        completer.complete('TIMEOUT');
+        return;
+      }
       try {
         final resp = await _rfcommChannel
             .invokeMethod<String>(
@@ -984,7 +1031,7 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
       } catch (e) {
         completer.completeError(e);
       }
-    });
+    }).catchError((_) {});
     return completer.future;
   }
 
@@ -1028,9 +1075,9 @@ class RealElm327BluetoothDataSource implements ObdDataSource {
     _pollingActive = false;
     _ecuReady = false;
     _turboConfigured = false;
-    await _closeSocketSilently();
     _resetFrameToZero();
     _setLinkStatus(ObdLinkStatus.disconnected);
+    await _closeSocketSilently();
     _appendLog('Socket RFCOMM cerrado.');
   }
 }

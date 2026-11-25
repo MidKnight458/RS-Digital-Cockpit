@@ -134,7 +134,7 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
   late final Clio172TrackSimulatorDataSource _simulatorDataSource;
   StreamSubscription<ObdLinkStatus>? _realLinkSub;
   Timer? _autoReconnectTimer;
-  bool _connectInFlight = false;
+  int _connectAttemptId = 0;
 
   @override
   ObdAdapterState build() {
@@ -144,6 +144,7 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
     _realLinkSub = _realDataSource.linkStatusStream.listen(_onRealLinkStatus);
 
     ref.onDispose(() {
+      _connectAttemptId++;
       _cancelAutoReconnect();
       _realLinkSub?.cancel();
       _realDataSource.disconnect();
@@ -203,12 +204,6 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
           statusText:
               '$devName enlazado • Esperando contacto del vehículo (ECU)...',
         );
-      case ObdLinkStatus.connecting:
-        state = state.copyWith(
-          linkStatus: linkStatus,
-          isConnecting: true,
-          isConnected: false,
-        );
       case ObdLinkStatus.reconnecting:
         state = state.copyWith(
           linkStatus: ObdLinkStatus.reconnecting,
@@ -218,12 +213,9 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
               'OBD2 desconectado o sin respuesta. Reintentando conexión automática...',
         );
         _scheduleAutoReconnect();
+      case ObdLinkStatus.connecting:
       case ObdLinkStatus.disconnected:
-        state = state.copyWith(
-          linkStatus: ObdLinkStatus.disconnected,
-          isConnecting: false,
-          isConnected: false,
-        );
+        break;
     }
   }
 
@@ -294,7 +286,7 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
       if (!ecuEnabled) return;
 
       await scanPairedBluetoothDevices();
-      if (savedMac != null && state.ecuEnabled) {
+      if (savedMac != null && state.ecuEnabled && _connectAttemptId == 0) {
         await connectToBluetoothAdapter(
           macAddress: savedMac,
           deviceName: savedName ?? 'ELM327 OBD-II',
@@ -311,9 +303,8 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
     } catch (_) {}
 
     if (!enabled) {
+      _connectAttemptId++;
       _cancelAutoReconnect();
-      await _realDataSource.disconnect();
-      await _simulatorDataSource.disconnect();
       state = state.copyWith(
         ecuEnabled: false,
         mode: ObdConnectionMode.realElm327Bluetooth,
@@ -323,16 +314,20 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
         reconnectAttempt: 0,
         statusText: 'ECU Bluetooth apagado (sin interferencia con audio)',
       );
+      await _realDataSource.disconnect();
+      await _simulatorDataSource.disconnect();
       return;
     }
 
     state = state.copyWith(
       ecuEnabled: true,
+      linkStatus: ObdLinkStatus.disconnected,
+      isConnecting: false,
       reconnectAttempt: 0,
       statusText: 'ECU activada. Buscando adaptador OBD2...',
     );
     await scanPairedBluetoothDevices();
-    if (state.selectedMacAddress != null) {
+    if (state.ecuEnabled && state.selectedMacAddress != null) {
       await connectToBluetoothAdapter(
         macAddress: state.selectedMacAddress!,
         deviceName: state.selectedDeviceName ?? 'ELM327 OBD-II',
@@ -363,7 +358,7 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
 
       state = state.copyWith(
         pairedDevices: devices,
-        statusText: state.isConnected
+        statusText: state.isConnected || state.isConnecting
             ? state.statusText
             : (devices.isEmpty
                 ? 'Vincula tu ELM327 en Ajustes Bluetooth'
@@ -382,13 +377,25 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
     } catch (_) {}
   }
 
+  Future<void> cancelConnecting() async {
+    _connectAttemptId++;
+    _cancelAutoReconnect();
+    state = state.copyWith(
+      linkStatus: ObdLinkStatus.disconnected,
+      isConnecting: false,
+      isConnected: false,
+      reconnectAttempt: 0,
+      statusText: 'Conexión cancelada. Elige un adaptador o toca Reconectar.',
+    );
+    await _realDataSource.disconnect();
+  }
+
   Future<void> reconnectNow() async {
     if (!state.ecuEnabled ||
         state.mode != ObdConnectionMode.realElm327Bluetooth ||
         state.selectedMacAddress == null) {
       return;
     }
-    _cancelAutoReconnect();
     state = state.copyWith(reconnectAttempt: 0);
     await connectToBluetoothAdapter(
       macAddress: state.selectedMacAddress!,
@@ -401,34 +408,39 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
     required String deviceName,
     bool isAutoRetry = false,
   }) async {
-    if (_connectInFlight) return;
-    _connectInFlight = true;
+    final attemptId = ++_connectAttemptId;
     _cancelAutoReconnect();
 
-    try {
-      if (!state.ecuEnabled) {
-        await setEcuEnabled(true);
-      }
-      await _simulatorDataSource.disconnect();
-      state = state.copyWith(
-        ecuEnabled: true,
-        mode: ObdConnectionMode.realElm327Bluetooth,
-        linkStatus: ObdLinkStatus.connecting,
-        selectedMacAddress: macAddress,
-        selectedDeviceName: deviceName,
-        isConnecting: true,
-        isConnected: false,
-        reconnectAttempt: isAutoRetry ? state.reconnectAttempt : 0,
-        statusText: isAutoRetry
-            ? 'Reconectando a $deviceName...'
-            : 'Conectando a $deviceName ($macAddress)...',
-      );
+    state = state.copyWith(
+      ecuEnabled: true,
+      mode: ObdConnectionMode.realElm327Bluetooth,
+      linkStatus: ObdLinkStatus.connecting,
+      selectedMacAddress: macAddress,
+      selectedDeviceName: deviceName,
+      isConnecting: true,
+      isConnected: false,
+      reconnectAttempt: isAutoRetry ? state.reconnectAttempt : 0,
+      statusText: isAutoRetry
+          ? 'Reconectando a $deviceName...'
+          : 'Conectando a $deviceName ($macAddress)...',
+    );
 
+    try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_savedEcuEnabledKey, true);
       await prefs.setString(_savedMacKey, macAddress);
       await prefs.setString(_savedNameKey, deviceName);
+    } catch (_) {}
 
+    await _simulatorDataSource.disconnect();
+    await _realDataSource.disconnect();
+
+    if (attemptId != _connectAttemptId) return;
+
+    try {
       await _realDataSource.connect(macAddress: macAddress);
+
+      if (attemptId != _connectAttemptId) return;
 
       if (!state.ecuEnabled ||
           state.mode != ObdConnectionMode.realElm327Bluetooth) {
@@ -456,18 +468,18 @@ class ObdConnectionModeNotifier extends Notifier<ObdAdapterState> {
         );
       }
     } catch (_) {
+      if (attemptId != _connectAttemptId) return;
       state = state.copyWith(
         linkStatus: ObdLinkStatus.reconnecting,
         isConnecting: false,
         isConnected: false,
       );
       _scheduleAutoReconnect();
-    } finally {
-      _connectInFlight = false;
     }
   }
 
   Future<void> setConnectionMode(ObdConnectionMode nextMode) async {
+    _connectAttemptId++;
     _cancelAutoReconnect();
     if (nextMode == ObdConnectionMode.trackSimulator) {
       await _realDataSource.disconnect();

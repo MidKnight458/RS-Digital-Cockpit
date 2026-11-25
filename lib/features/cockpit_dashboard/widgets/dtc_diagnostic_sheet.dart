@@ -237,15 +237,37 @@ class DtcDiagnosticSheet extends ConsumerWidget {
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                if (adapterState.isConnecting ||
-                                    adapterState.linkStatus ==
-                                        ObdLinkStatus.reconnecting)
+                                if (adapterState.isConnecting)
                                   SizedBox(
                                     width: 16,
                                     height: 16,
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
                                       color: primary,
+                                    ),
+                                  )
+                                else if (adapterState.linkStatus ==
+                                        ObdLinkStatus.reconnecting &&
+                                    !isSimulator)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: RenaultSportPalette.coldEngineAmber
+                                          .withValues(alpha: 0.16),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      adapterState.reconnectAttempt > 0
+                                          ? 'REINTENTO #${adapterState.reconnectAttempt}'
+                                          : 'REINTENTO',
+                                      style: AppTheme.telemetryNumericStyle(
+                                        fontSize: 10,
+                                        color:
+                                            RenaultSportPalette.coldEngineAmber,
+                                      ),
                                     ),
                                   )
                                 else if (adapterState.linkStatus ==
@@ -354,22 +376,37 @@ class DtcDiagnosticSheet extends ConsumerWidget {
                             adapterState.selectedMacAddress != null &&
                             !adapterState.isConnected) ...[
                           const SizedBox(height: 10),
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: OutlinedButton.icon(
-                              onPressed: adapterState.isConnecting
-                                  ? null
-                                  : obdNotifier.reconnectNow,
-                              icon: const Icon(
-                                Icons.sync_rounded,
-                                size: 17,
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: adapterState.isConnecting
+                                    ? null
+                                    : obdNotifier.reconnectNow,
+                                icon: const Icon(
+                                  Icons.sync_rounded,
+                                  size: 17,
+                                ),
+                                label: Text(
+                                  adapterState.isConnecting
+                                      ? 'CONECTANDO...'
+                                      : 'RECONECTAR AHORA',
+                                ),
                               ),
-                              label: Text(
-                                adapterState.isConnecting
-                                    ? 'CONECTANDO...'
-                                    : 'RECONECTAR AHORA',
-                              ),
-                            ),
+                              if (adapterState.isConnecting ||
+                                  adapterState.linkStatus ==
+                                      ObdLinkStatus.reconnecting)
+                                TextButton.icon(
+                                  onPressed: obdNotifier.cancelConnecting,
+                                  icon: const Icon(
+                                    Icons.close_rounded,
+                                    size: 17,
+                                  ),
+                                  label: const Text('CANCELAR'),
+                                ),
+                            ],
                           ),
                         ],
 
