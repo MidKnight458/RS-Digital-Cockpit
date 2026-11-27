@@ -1,6 +1,6 @@
 # Documentación Técnica: RS Digital Cockpit
 
-- **Aplicación:** RS Digital Cockpit (`com.rs.digital.cockpit`, versión `2.0.5+173`)
+- **Aplicación:** RS Digital Cockpit (`com.rs.digital.cockpit`, versión `2.0.6+174`)
 - **Vehículo objetivo:** Renault Clio II Sport 172 Fase 2, modelo 2004, motor F4R 736 2.0L 16v y caja JC5-129
 - **ECU y bus:** Siemens Sirius 34 sobre ISO 14230-4 KWP2000, Línea K a 10.4 kbps
 - **Plataforma:** Android 17 / API 36, probado en Google Pixel Tablet y smartphone Android

@@ -1,0 +1,5 @@
+# Copia este archivo a android/key.properties (ignorado por Git) para firmar builds --release
+storePassword=CAMBIAR_PASSWORD
+keyPassword=CAMBIAR_PASSWORD
+keyAlias=rs_upload
+storeFile=/home/tu-usuario/.android/rs-upload-keystore.jks
