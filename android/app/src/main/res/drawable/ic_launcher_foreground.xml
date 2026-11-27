@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Resplandor ámbar Sagem centrado -->
+    <path android:pathData="M54,10 A44,44 0 1,0 54,98 A44,44 0 1,0 54,10 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="44">
+                <item android:offset="0.0" android:color="#29FF6B00" />
+                <item android:offset="0.50" android:color="#1EFF6B00" />
+                <item android:offset="0.78" android:color="#0BFF6B00" />
+                <item android:offset="1.0" android:color="#00FF6B00" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Rombo exterior Renault Sport (Liquid Yellow -> Sagem Amber) -->
+    <path android:pathData="M54,24 L77.75,54 L54,84 L30.25,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="16.5"
+                android:startY="16.5"
+                android:endX="91.5"
+                android:endY="91.5"
+                android:startColor="#FFD100"
+                android:endColor="#FF6B00" />
+        </aapt:attr>
+    </path>
+
+    <!-- Rombo interior hueco -->
+    <path
+        android:fillColor="#0F1115"
+        android:pathData="M54,39 L65.25,54 L54,69 L42.75,54 Z" />
+
+    <!-- Líneas diagonales de relieve -->
+    <path
+        android:pathData="M54,24 L65.25,54 M54,84 L42.75,54"
+        android:strokeColor="#0F1115"
+        android:strokeWidth="1.625"
+        android:strokeLineCap="butt" />
+</vector>

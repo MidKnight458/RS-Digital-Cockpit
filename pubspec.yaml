@@ -3,7 +3,7 @@ description: >-
   RS Digital Cockpit - Android Car Launcher & Real-Time KWP2000 Telemetry Suite
   for the 2004 Renault Clio II Sport 172 Phase 2 (F4R 736 / Siemens Sirius 34 ECU).
 publish_to: 'none'
-version: 2.0.4+172
+version: 2.0.5+173
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
